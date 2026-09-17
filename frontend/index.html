@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ANT+ Sum Dashboard</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main>
+      <div id="status" class="status status--connecting">connecting…</div>
+      <div id="total" class="total">0 m</div>
+      <div id="session-info" class="session-info"></div>
+      <table id="devices">
+        <thead>
+          <tr>
+            <th>Device</th>
+            <th>Type</th>
+            <th>Distance</th>
+          </tr>
+        </thead>
+        <tbody id="device-rows"></tbody>
+      </table>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

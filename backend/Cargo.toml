@@ -1,0 +1,18 @@
+[package]
+name = "ant-sum-dashboard"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.8"
+anyhow = "1"
+ant = { git = "https://github.com/cujomalainey/ant-rs", rev = "4426dc64b060ad511931644cb419ebd7cb6b8769" }
+rusb = "0.9"
