@@ -19,11 +19,12 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = cli::Cli::parse();
     let (update_tx, update_rx) = mpsc::channel(256);
+    let inactivity_timeout = Duration::from_secs(cli.inactivity_timeout_secs);
 
     if cli.simulate {
         tracing::info!("starting simulator data source");
         tokio::spawn(async move {
-            if let Err(err) = simulator::run(update_tx).await {
+            if let Err(err) = simulator::run(update_tx, inactivity_timeout).await {
                 tracing::error!(?err, "simulator source exited");
             }
         });
@@ -43,7 +44,6 @@ async fn main() -> anyhow::Result<()> {
     };
     let (state_tx, state_rx) = watch::channel(initial_state);
 
-    let inactivity_timeout = Duration::from_secs(cli.inactivity_timeout_secs);
     tokio::spawn(state::run(update_rx, state_tx, inactivity_timeout));
 
     let ctx = ws::AppContext { rx: state_rx };
