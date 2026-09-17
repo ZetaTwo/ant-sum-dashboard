@@ -12,6 +12,8 @@ export interface DeviceRow {
 export interface StateMessage {
   type: "state";
   total_distance_m: number;
-  session_started_at_ms: number;
+  // null when no session is currently running (before any device has ever
+  // reported, or right after an inactivity reset) - serde's Option<u64>.
+  session_started_at_ms: number | null;
   devices: DeviceRow[];
 }

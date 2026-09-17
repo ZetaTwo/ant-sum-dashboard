@@ -59,7 +59,12 @@ pub struct DeviceRow {
 pub enum WsMessage {
     State {
         total_distance_m: f64,
-        session_started_at_ms: u64,
+        /// `None` when no session is currently running - either at startup
+        /// before any device has ever reported, or right after an
+        /// inactivity reset before new data has arrived. Distinct from a
+        /// real epoch-ms timestamp so the frontend can't mistake "no
+        /// session yet" for "session started at the Unix epoch".
+        session_started_at_ms: Option<u64>,
         devices: Vec<DeviceRow>,
     },
 }

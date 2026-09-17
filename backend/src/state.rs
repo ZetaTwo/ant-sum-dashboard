@@ -50,12 +50,15 @@ impl AppState {
     }
 
     fn apply_update(&mut self, update: DeviceUpdate) {
-        let entry = self.devices.entry(update.device_id).or_insert_with(|| DeviceState {
-            device_type: update.device_type,
-            total_distance_m: 0.0,
-            last_seen: update.timestamp,
-            last_seen_wall: SystemTime::now(),
-        });
+        let entry = self
+            .devices
+            .entry(update.device_id)
+            .or_insert_with(|| DeviceState {
+                device_type: update.device_type,
+                total_distance_m: 0.0,
+                last_seen: update.timestamp,
+                last_seen_wall: SystemTime::now(),
+            });
         entry.device_type = update.device_type;
         entry.total_distance_m = update.distance_m;
         entry.last_seen = update.timestamp;
@@ -99,9 +102,14 @@ impl AppState {
             });
         }
         devices.sort_by_key(|d| d.device_id);
+        // No session is actively running until the first device reports
+        // after (re)start or after an inactivity reset - `is_reset` tracks
+        // exactly that, so reuse it rather than a sentinel timestamp.
+        let session_started_at_ms =
+            (!self.session.is_reset).then(|| to_epoch_ms(self.session.session_started_at_wall));
         WsMessage::State {
             total_distance_m,
-            session_started_at_ms: to_epoch_ms(self.session.session_started_at_wall),
+            session_started_at_ms,
             devices,
         }
     }
@@ -168,9 +176,21 @@ mod tests {
     fn should_reset_boundary_conditions() {
         let start = Instant::now();
         let timeout = Duration::from_secs(30);
-        assert!(!should_reset(start, start + Duration::from_secs(29), timeout));
-        assert!(should_reset(start, start + Duration::from_secs(30), timeout));
-        assert!(should_reset(start, start + Duration::from_secs(31), timeout));
+        assert!(!should_reset(
+            start,
+            start + Duration::from_secs(29),
+            timeout
+        ));
+        assert!(should_reset(
+            start,
+            start + Duration::from_secs(30),
+            timeout
+        ));
+        assert!(should_reset(
+            start,
+            start + Duration::from_secs(31),
+            timeout
+        ));
     }
 
     #[test]
@@ -184,7 +204,11 @@ mod tests {
 
         assert_eq!(state.devices.get(&1).unwrap().total_distance_m, 100.0);
         match state.to_ws_message() {
-            WsMessage::State { total_distance_m, devices, .. } => {
+            WsMessage::State {
+                total_distance_m,
+                devices,
+                ..
+            } => {
                 assert_eq!(total_distance_m, 0.0);
                 assert_eq!(devices[0].distance_m, 0.0);
             }
@@ -200,7 +224,11 @@ mod tests {
 
         state.apply_update(update(1, 142.0, t0 + Duration::from_secs(32)));
         match state.to_ws_message() {
-            WsMessage::State { total_distance_m, devices, .. } => {
+            WsMessage::State {
+                total_distance_m,
+                devices,
+                ..
+            } => {
                 assert_eq!(total_distance_m, 42.0);
                 assert_eq!(devices[0].distance_m, 42.0);
             }

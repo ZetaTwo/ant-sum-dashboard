@@ -18,17 +18,17 @@ use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
 use ant::channel::mpsc::{RxChannel, TxChannel};
-use ant::drivers::{is_ant_usb_device_from_device, UsbDriver};
+use ant::drivers::{UsbDriver, is_ant_usb_device_from_device};
+use ant::messages::RxMessage;
 use ant::messages::config::{
     AssignChannel, ChannelId, ChannelRfFrequency, ChannelType, EnableExtRxMessages, SetNetworkKey,
 };
 use ant::messages::control::OpenRxScanMode;
-use ant::messages::RxMessage;
 use ant::router::Router;
 use rusb::DeviceList;
 use tokio::sync::mpsc;
 
-use crate::fe_c::{parse_page16, DistanceAccumulator};
+use crate::fe_c::{DistanceAccumulator, parse_page16};
 use crate::types::{DeviceUpdate, EquipmentType};
 
 /// 2400 + 57 = 2457 MHz, the standard ANT+ operating frequency.
@@ -64,11 +64,17 @@ fn run_blocking(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
             )
         })?;
 
-    let driver = UsbDriver::new(device).map_err(|e| anyhow::anyhow!("failed to open ANT+ USB driver: {e:?}"))?;
+    let driver = UsbDriver::new(device)
+        .map_err(|e| anyhow::anyhow!("failed to open ANT+ USB driver: {e:?}"))?;
 
     let (_unused_tx, unused_rx) = std_mpsc::channel();
-    let mut router = Router::new(driver, RxChannel { receiver: unused_rx })
-        .map_err(|e| anyhow::anyhow!("Router::new failed: {e:?}"))?;
+    let mut router = Router::new(
+        driver,
+        RxChannel {
+            receiver: unused_rx,
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("Router::new failed: {e:?}"))?;
 
     let (chan_tx, chan_rx) = std_mpsc::channel();
     let channel_number = router
@@ -90,7 +96,10 @@ fn run_blocking(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
         .send(&ChannelId::new_wildcard(channel_number))
         .map_err(|e| anyhow::anyhow!("ChannelId failed: {e:?}"))?;
     router
-        .send(&ChannelRfFrequency::new(channel_number, ANT_PLUS_RF_FREQUENCY_OFFSET))
+        .send(&ChannelRfFrequency::new(
+            channel_number,
+            ANT_PLUS_RF_FREQUENCY_OFFSET,
+        ))
         .map_err(|e| anyhow::anyhow!("ChannelRfFrequency failed: {e:?}"))?;
     router
         .send(&EnableExtRxMessages::new(true))

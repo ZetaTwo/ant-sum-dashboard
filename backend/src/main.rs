@@ -38,7 +38,7 @@ async fn main() -> anyhow::Result<()> {
 
     let initial_state = WsMessage::State {
         total_distance_m: 0.0,
-        session_started_at_ms: 0,
+        session_started_at_ms: None,
         devices: Vec::new(),
     };
     let (state_tx, state_rx) = watch::channel(initial_state);

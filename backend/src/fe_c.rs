@@ -97,7 +97,16 @@ mod tests {
     fn parse_page16_extracts_fields() {
         // page=0x10, equipment=25 (bike), elapsed=10, distance=42,
         // speed=1000 (1.0 m/s) little-endian, hr=150, flags=distance-enabled
-        let payload = [0x10, 25, 10, 42, 0xE8, 0x03, 150, DISTANCE_TRAVELED_ENABLED_BIT];
+        let payload = [
+            0x10,
+            25,
+            10,
+            42,
+            0xE8,
+            0x03,
+            150,
+            DISTANCE_TRAVELED_ENABLED_BIT,
+        ];
         let parsed = parse_page16(&payload).unwrap();
         assert_eq!(parsed.equipment_type_byte, 25);
         assert_eq!(parsed.elapsed_time_raw, 10);

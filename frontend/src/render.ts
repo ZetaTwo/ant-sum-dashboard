@@ -30,8 +30,12 @@ export function renderState(msg: StateMessage): void {
   lastState = msg;
   totalEl.textContent = formatDistance(msg.total_distance_m);
 
-  const startedAgo = Math.max(0, Date.now() - msg.session_started_at_ms);
-  sessionInfoEl.textContent = `session running for ${Math.floor(startedAgo / 1000)}s`;
+  if (msg.session_started_at_ms === null) {
+    sessionInfoEl.textContent = "waiting for data…";
+  } else {
+    const startedAgo = Math.max(0, Date.now() - msg.session_started_at_ms);
+    sessionInfoEl.textContent = `session running for ${Math.floor(startedAgo / 1000)}s`;
+  }
 
   const rows = [...msg.devices].sort((a, b) => a.device_id - b.device_id);
   rowsEl.replaceChildren(
