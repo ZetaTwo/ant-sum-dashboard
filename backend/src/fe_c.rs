@@ -1,13 +1,42 @@
 //! ANT+ FE-C (Fitness Equipment) "General FE Data" broadcast page (page
 //! number 16 / 0x10) parsing, and per-device distance rollover accumulation.
 //!
-//! TODO: the byte layout below is recalled from memory, not read directly
-//! from the ANT+ Device Profile - Fitness Equipment spec (thisisant.com).
-//! Verify every field offset against the authoritative spec before trusting
-//! parsed distances from real hardware.
+//! Byte layout verified against the ANT+ Device Profile - Fitness Equipment
+//! spec (Tables 8-8/8-9, via a mirrored copy of D000001231 Rev 5.0 - not
+//! read directly from thisisant.com) against real hardware: page number,
+//! equipment type (bits 0-4 of byte 1), elapsed time (byte 2, 0.25s,
+//! rolls over at 64s - `elapsed_time_raw` is stored but not currently
+//! consumed), distance (byte 3, 1m, rolls over at 256m), speed (bytes 4-5,
+//! little-endian, 0.001 m/s, 0xFFFF = invalid), heart rate (byte 6, 0xFF =
+//! invalid), and the distance-enabled bit (byte 7, bit 2).
 
 const PAGE_NUMBER_GENERAL_FE_DATA: u8 = 0x10;
 const DISTANCE_TRAVELED_ENABLED_BIT: u8 = 0x04;
+
+/// Byte 7, bits 4-6 of the General FE Data page: what the equipment itself
+/// thinks its current state is. Lets us tell "device is idle/not in use, so
+/// frozen readings are expected" apart from "device is in use but we're not
+/// seeing fresh data" - the latter would be a real bug.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FeState {
+    Asleep,
+    Ready,
+    InUse,
+    Finished,
+    Unknown(u8),
+}
+
+impl FeState {
+    fn from_bits(bits: u8) -> Self {
+        match bits {
+            1 => FeState::Asleep,
+            2 => FeState::Ready,
+            3 => FeState::InUse,
+            4 => FeState::Finished,
+            other => FeState::Unknown(other),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Page16Data {
@@ -16,8 +45,9 @@ pub struct Page16Data {
     /// Only `Some` when the source device sets the "distance traveled
     /// enabled" capability bit; otherwise the raw byte is not meaningful.
     pub distance_raw: Option<u8>,
-    pub speed_mps: f32,
+    pub speed_mps: Option<f32>,
     pub heart_rate: Option<u8>,
+    pub fe_state: FeState,
 }
 
 /// Parses an 8-byte FE-C broadcast payload as page 16 ("General FE Data").
@@ -31,6 +61,10 @@ pub fn parse_page16(payload: &[u8; 8]) -> Option<Page16Data> {
     let distance_enabled = capability_flags & DISTANCE_TRAVELED_ENABLED_BIT != 0;
 
     let speed_raw = u16::from_le_bytes([payload[4], payload[5]]);
+    let speed_mps = match speed_raw {
+        0xFFFF => None,
+        raw => Some(raw as f32 / 1000.0),
+    };
     let heart_rate = match payload[6] {
         0xFF => None,
         hr => Some(hr),
@@ -40,8 +74,9 @@ pub fn parse_page16(payload: &[u8; 8]) -> Option<Page16Data> {
         equipment_type_byte: payload[1],
         elapsed_time_raw: payload[2],
         distance_raw: distance_enabled.then_some(payload[3]),
-        speed_mps: speed_raw as f32 / 1000.0,
+        speed_mps,
         heart_rate,
+        fe_state: FeState::from_bits((capability_flags >> 4) & 0x07),
     })
 }
 
@@ -111,8 +146,15 @@ mod tests {
         assert_eq!(parsed.equipment_type_byte, 25);
         assert_eq!(parsed.elapsed_time_raw, 10);
         assert_eq!(parsed.distance_raw, Some(42));
-        assert_eq!(parsed.speed_mps, 1.0);
+        assert_eq!(parsed.speed_mps, Some(1.0));
         assert_eq!(parsed.heart_rate, Some(150));
+    }
+
+    #[test]
+    fn parse_page16_treats_0xffff_speed_as_invalid() {
+        let payload = [0x10, 25, 10, 42, 0xFF, 0xFF, 150, DISTANCE_TRAVELED_ENABLED_BIT];
+        let parsed = parse_page16(&payload).unwrap();
+        assert_eq!(parsed.speed_mps, None);
     }
 
     #[test]

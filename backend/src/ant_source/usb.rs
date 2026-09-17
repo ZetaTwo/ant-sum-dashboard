@@ -131,6 +131,14 @@ fn run_blocking(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
             let Some(page) = parse_page16(&data.payload.data) else {
                 continue; // not the General FE Data page
             };
+            tracing::debug!(
+                device_number = channel_id.device_number,
+                equipment_type_byte = page.equipment_type_byte,
+                distance_raw = ?page.distance_raw,
+                speed_mps = ?page.speed_mps,
+                fe_state = ?page.fe_state,
+                "page16 parsed"
+            );
             let Some(distance_raw) = page.distance_raw else {
                 continue; // device doesn't report distance
             };
@@ -143,7 +151,7 @@ fn run_blocking(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
                 device_id,
                 device_type: EquipmentType::from_fe_c_byte(page.equipment_type_byte),
                 distance_m,
-                speed_mps: Some(page.speed_mps),
+                speed_mps: page.speed_mps,
                 heart_rate: page.heart_rate,
                 timestamp: Instant::now(),
             };

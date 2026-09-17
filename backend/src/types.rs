@@ -12,11 +12,16 @@ pub enum EquipmentType {
 
 impl EquipmentType {
     pub fn from_fe_c_byte(byte: u8) -> Self {
-        // ANT+ FE-C equipment type field, low 5 bits.
+        // ANT+ FE-C equipment type field, low 5 bits. Verified against the
+        // ANT+ Device Profile - Fitness Equipment spec, Table 8-8: 19
+        // Treadmill, 20 Elliptical, 21 Reserved (Do Not Use), 22 Rower, 23
+        // Climber, 24 Nordic Skier, 25 Trainer/Stationary Bike. (21 was
+        // previously mismapped here to NordicSkier - that's the reserved
+        // value, the real Nordic Skier code is 24.)
         match byte & 0x1F {
             25 => EquipmentType::Bike,
             22 => EquipmentType::Rower,
-            21 => EquipmentType::NordicSkier,
+            24 => EquipmentType::NordicSkier,
             other => EquipmentType::Other(other),
         }
     }
