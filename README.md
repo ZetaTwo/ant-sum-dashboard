@@ -1,47 +1,65 @@
 # ANT+ Sum Dashboard
 
-Sums the distance covered on multiple ANT+ training devices (bikes, rowers,
-ski ergs) into one cumulative number, broken down per device, streamed live
-to a browser over a WebSocket. Rust backend, plain TypeScript frontend
-(Vite, no UI framework). In-memory only — state does not survive a restart.
+A live dashboard that sums the distance covered on multiple ANT+ training
+devices (bikes, rowers, ski ergs) into one cumulative number, with a
+per-device breakdown, streamed to a browser in real time.
 
-See [the implementation plan](/home/zetatwo/.claude/plans/we-are-going-to-harmonic-pony.md)
-for the full design and open risks.
+- **Backend**: Rust. Reads ANT+ FE-C (Fitness Equipment) broadcasts from a
+  USB ANT+ dongle, aggregates per-device distance in memory, and streams
+  state to connected browsers over a WebSocket.
+- **Frontend**: plain TypeScript, no UI framework, bundled with Vite.
+- **Storage**: in-memory only. State does not survive a backend restart.
 
-## Status
+## How it works
 
-- Backend pipeline (`--simulate` mode), session reset logic, and the
-  WebSocket stream work end-to-end.
-- Frontend renders the total + per-device breakdown against the simulator.
-- Real ANT+ USB hardware support (`ant_source/usb.rs`) is wired up and
-  validated against the attached ANTUSB-m stick: USB open, the full
-  reset/capabilities handshake, channel configuration, and continuous scan
-  mode (`OpenRxScanMode`) all work. It uses the `ant` crate (git dependency,
-  `cujomalainey/ant-rs`, pinned to commit `4426dc64b060ad511931644cb419ebd7cb6b8769`
-  on the `development` branch — crates.io's `ant`/`ant-usb`/`ant-plus` are
-  stale 2017 placeholders and must not be used). `ant-rs` has no FE-C
-  profile, so `ant_source/usb.rs` decodes broadcast payloads with the same
-  `fe_c::parse_page16` used in tests.
-- The ANT+ Managed Network key is hardcoded in `ant_source/usb.rs`
-  (`ANT_PLUS_NETWORK_KEY`). It's formally gated behind Garmin's ANT+ Adopter
-  registration, but this exact value is openly published as an ordinary
-  constant in mainstream open-source ANT+ projects (openant, GoldenCheetah —
-  see the comment on the constant for exact citations), so it's committed
-  directly rather than kept in a git-ignored config file. Verified against
-  the attached hardware: radio initializes and scan mode opens with no
-  errors. Actual device reception (e.g. a PM5) hasn't been confirmed yet —
-  needs a real ANT+ device powered on and transmitting nearby to test.
+- Devices are received via ANT+ continuous scan mode on a single channel,
+  so multiple simultaneous devices (bike, rower, ski erg, ...) are picked up
+  without pre-pairing — each broadcast carries its own originating device
+  number.
+- Each device's raw distance counter (a rolling 1-byte, 0-255m value) is
+  unrolled into a monotonically increasing total for the life of the
+  process.
+- If no device reports *new* distance for `--inactivity-timeout-secs`
+  (default 30), the dashboard's displayed totals reset to zero. This is a
+  presentation-layer reset only — the real per-device totals in memory are
+  never wiped, so the reset just changes what's currently shown, not what's
+  tracked. Devices keep broadcasting on a fixed schedule even while idle, so
+  activity is defined as distance actually increasing, not merely a message
+  arriving.
+- `fe_c.rs` parses ANT+ FE-C page 16 ("General FE Data") itself — the `ant`
+  crate this project depends on has no built-in FE-C profile support.
 
 ## Prerequisites
 
 - Rust (stable, 2024 edition)
 - Node.js + npm
-- `libusb-1.0-0-dev` (installed) — needed to build `rusb`.
-- On WSL2: the ANT+ USB dongle attached via `usbipd attach --wsl` from the
-  Windows host. If `lsusb` stops showing `ID 0fcf:1009 Dynastream
-  Innovations, Inc. ANTUSB-m Stick`, the passthrough dropped — reattach it.
+- `libusb-1.0-0-dev` — needed to build `rusb` (the USB backend), required
+  even in `--simulate` mode since it's a compile-time dependency.
+- To use real hardware: an ANT+ USB dongle. On WSL2, attach it from the
+  Windows host with `usbipd attach --wsl`; if `lsusb` stops showing the
+  dongle, the passthrough dropped and needs reattaching.
 
-## Dev (no hardware — primary path)
+## Usage
+
+CLI flags (all backend, also settable via env var — see `--help`):
+
+| Flag | Env var | Default | Meaning |
+|---|---|---|---|
+| `--port` | `PORT` | `8080` | HTTP/WebSocket port |
+| `--simulate` | `SIMULATE` | off | Use synthetic data instead of real hardware |
+| `--inactivity-timeout-secs` | `INACTIVITY_TIMEOUT_SECS` | `30` | Idle time before the displayed total resets |
+| `--static-dir` | `STATIC_DIR` | `../frontend/dist` | Where to serve the built frontend from |
+
+### Dev
+
+With a `Makefile` shortcut:
+
+```sh
+make install   # frontend deps, once
+make dev       # backend (--simulate) + Vite dev server together, Ctrl-C stops both
+```
+
+Or by hand:
 
 ```sh
 # terminal 1
@@ -51,35 +69,49 @@ cd backend && cargo run -- --simulate --port 8080
 cd frontend && npm install && npm run dev
 ```
 
-## Dev (real hardware)
+Open the URL Vite prints (default `http://localhost:5173`) — its dev server
+proxies `/ws` through to the backend.
+
+To run against real hardware instead of the simulator: `make dev-hardware`,
+or `cargo run -- --port 8080` in `backend/`.
+
+### Testing
 
 ```sh
-cd backend && cargo run -- --port 8080
+make test
 ```
 
-Open the URL Vite prints (default `http://localhost:5173`). The dev server
-proxies `/ws` to the backend on port 8080.
+Runs the backend's Rust unit tests (`cargo test`) and the frontend
+typecheck (`tsc --noEmit`).
 
-Useful flags: `--inactivity-timeout-secs <N>` (default 30) controls how long
-the dashboard waits with no data from any device before the displayed totals
-reset to zero (the real per-device totals are never wiped in memory — see
-the plan's "Reset-after-inactivity semantics").
-
-## Testing
+### Production
 
 ```sh
-cd backend && cargo test
+make build
+make run
 ```
 
-Covers FE-C distance-rollover accumulation and the session baseline/reset
-logic — the two trickiest pieces of pure logic in the backend.
+`make build` produces the release backend binary and the built frontend
+assets; `make run` serves both from a single process (backend serves
+`/ws` and the static frontend together — no separate frontend server in
+production).
 
-## Production build
+## ANT+ network key
 
-```sh
-cd frontend && npm run build
-cd backend && cargo build --release
-./target/release/ant-sum-dashboard --port 8080 --static-dir ../frontend/dist
-```
+Real device reception requires the ANT+ Managed Network key, which Garmin
+formally gates behind their ANT+ Adopter program registration. This value
+is hardcoded in `ant_source/usb.rs` (`ANT_PLUS_NETWORK_KEY`) rather than
+kept in a config file: the exact byte value is openly published as an
+ordinary constant in mainstream open-source ANT+ projects (openant,
+GoldenCheetah — see the citation on the constant), so there's nothing
+secret to keep out of version control. Whether using it without going
+through Garmin's own Adopter registration complies with their license terms
+is a separate question from the technical one this project answers.
 
-Serves the built frontend and the `/ws` endpoint from a single binary.
+## Dependency notes
+
+- Real ANT+ radio access uses the `ant` crate from
+  [`cujomalainey/ant-rs`](https://github.com/cujomalainey/ant-rs)'s
+  `development` branch via a git dependency pinned to a specific commit.
+  The versions published on crates.io under `ant`/`ant-usb`/`ant-plus` are
+  stale 2017 placeholders and must not be used.
