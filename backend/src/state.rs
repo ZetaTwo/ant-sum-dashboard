@@ -50,6 +50,17 @@ impl AppState {
     }
 
     fn apply_update(&mut self, update: DeviceUpdate) {
+        // Real ANT+ devices keep broadcasting at a fixed rate even while
+        // idle (observed directly: a stationary bike kept re-sending the
+        // same frozen distance every ~1.25s indefinitely). So "a message
+        // arrived" is not "activity" for inactivity-reset purposes - only
+        // genuine forward progress is. A brand new device counts as
+        // activity too (it just connected).
+        let moved = match self.devices.get(&update.device_id) {
+            Some(existing) => update.distance_m > existing.total_distance_m,
+            None => true,
+        };
+
         let entry = self
             .devices
             .entry(update.device_id)
@@ -61,11 +72,16 @@ impl AppState {
             });
         entry.device_type = update.device_type;
         entry.total_distance_m = update.distance_m;
+        // last_seen updates on every broadcast regardless of movement -
+        // it's "is this device still connected", a different concept from
+        // "is anyone actively moving" (which drives the inactivity reset).
         entry.last_seen = update.timestamp;
         entry.last_seen_wall = SystemTime::now();
 
-        self.global_last_activity = update.timestamp;
-        self.session.is_reset = false;
+        if moved {
+            self.global_last_activity = update.timestamp;
+            self.session.is_reset = false;
+        }
     }
 
     /// Returns true if a new session was started (baseline re-snapshotted).
@@ -245,5 +261,21 @@ mod tests {
         assert!(state.maybe_reset_session(t0 + Duration::from_secs(31)));
         // Still idle a tick later: must not reset again (already reset).
         assert!(!state.maybe_reset_session(t0 + Duration::from_secs(32)));
+    }
+
+    #[test]
+    fn repeated_broadcasts_with_unchanged_distance_do_not_block_reset() {
+        // Regression test: real ANT+ devices keep broadcasting at a fixed
+        // rate even while idle, re-sending the same frozen distance. That
+        // must not look like "activity" and keep pushing the inactivity
+        // timeout out indefinitely.
+        let mut state = AppState::new(Duration::from_secs(30));
+        let t0 = Instant::now();
+        state.apply_update(update(1, 100.0, t0));
+        state.apply_update(update(1, 100.0, t0 + Duration::from_secs(10)));
+        state.apply_update(update(1, 100.0, t0 + Duration::from_secs(20)));
+
+        // 31s after the last genuine movement (t0), not the last message.
+        assert!(state.maybe_reset_session(t0 + Duration::from_secs(31)));
     }
 }
