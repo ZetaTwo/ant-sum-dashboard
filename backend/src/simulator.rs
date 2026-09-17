@@ -51,7 +51,25 @@ pub async fn run(
     // device between moving and idle-but-still-transmitting so `--simulate`
     // exercises the reset path the same way real hardware does.
     let active_duration = inactivity_timeout.mul_f64(2.0);
-    let pause_duration = inactivity_timeout.mul_f64(1.1);
+    let cycle_duration = active_duration + inactivity_timeout.mul_f64(1.1);
+    // Shared clock: every device derives "am I active or paused right now"
+    // fresh each tick from the same `start` (elapsed % cycle_duration),
+    // rather than each device accumulating its own independent phase-timer
+    // loop. The latter drifted the three devices out of sync over many
+    // cycles, because 1.1x the timeout is not a whole multiple of the 1s
+    // tick interval, so each device's own loop rounded to a slightly
+    // different number of ticks per pause - an error that compounded cycle
+    // over cycle. Computing the phase fresh from an absolute start time has
+    // nothing to accumulate.
+    //
+    // `start` is also used below as the anchor for every device's tick
+    // schedule (via `interval_at`, not plain `interval`), so all three
+    // devices tick at the exact same wall-clock instants instead of each
+    // starting its own 1s cadence from whenever its task happened to get
+    // scheduled - otherwise a small constant per-device offset (up to one
+    // tick) eats into the pause window's margin and can skip a reset on
+    // some cycles even without any drift.
+    let start = tokio::time::Instant::now();
 
     let mut handles = Vec::new();
     for device in devices {
@@ -59,8 +77,9 @@ pub async fn run(
         handles.push(tokio::spawn(run_device(
             device,
             tx,
+            start,
             active_duration,
-            pause_duration,
+            cycle_duration,
         )));
     }
 
@@ -73,34 +92,16 @@ pub async fn run(
 async fn run_device(
     mut device: FakeDevice,
     tx: mpsc::Sender<DeviceUpdate>,
+    start: tokio::time::Instant,
     active_duration: Duration,
-    pause_duration: Duration,
+    cycle_duration: Duration,
 ) {
-    let mut interval = tokio::time::interval(device.tick_interval);
+    let mut interval = tokio::time::interval_at(start, device.tick_interval);
     loop {
-        if !run_phase(&mut device, &tx, &mut interval, active_duration, true).await {
-            return; // receiver gone, shut this device down
-        }
-        if !run_phase(&mut device, &tx, &mut interval, pause_duration, false).await {
-            return;
-        }
-    }
-}
-
-/// Ticks for `phase_duration`, sending one update per tick. When `moving`
-/// is true, distance advances (with jitter) like a device in use; when
-/// false, distance holds and speed reports 0 - a device that's connected
-/// and still transmitting, but not being pedaled/rowed/skied.
-async fn run_phase(
-    device: &mut FakeDevice,
-    tx: &mpsc::Sender<DeviceUpdate>,
-    interval: &mut tokio::time::Interval,
-    phase_duration: Duration,
-    moving: bool,
-) -> bool {
-    let phase_start = Instant::now();
-    while phase_start.elapsed() < phase_duration {
         interval.tick().await;
+
+        let pos_in_cycle = start.elapsed().as_secs_f64() % cycle_duration.as_secs_f64();
+        let moving = pos_in_cycle < active_duration.as_secs_f64();
 
         let speed_mps = if moving {
             let elapsed_s = device.tick_interval.as_secs_f64();
@@ -120,8 +121,7 @@ async fn run_phase(
             timestamp: Instant::now(),
         };
         if tx.send(update).await.is_err() {
-            return false; // receiver gone, shut this device down
+            return; // receiver gone, shut this device down
         }
     }
-    true
 }
