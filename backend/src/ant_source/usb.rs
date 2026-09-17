@@ -45,12 +45,39 @@ const FE_C_DEVICE_TYPE: u8 = 0x11;
 /// there is no keyless "public" ANT+ mode.
 const ANT_PLUS_NETWORK_KEY: [u8; 8] = [0xB9, 0xA5, 0x21, 0xFB, 0xBD, 0x72, 0xC3, 0x45];
 
+/// Wait between reconnect attempts after a USB/protocol error - e.g. the
+/// dongle dropping out, which happens routinely on WSL2 when the usbipd
+/// passthrough drops. Fixed rather than exponential: attempts are cheap
+/// (device enumeration, then either a fast failure or a fresh handshake),
+/// so there's no real cost to just retrying at a steady pace while waiting
+/// for the user to reattach the device.
+const RETRY_DELAY: Duration = Duration::from_secs(5);
+
 pub async fn run(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
-    // ant-rs's Router::process() is a synchronous polling loop, so it runs
-    // on a blocking thread and hands results back over the async channel.
-    tokio::task::spawn_blocking(move || run_blocking(tx))
-        .await
-        .map_err(|e| anyhow::anyhow!("ANT+ USB thread panicked: {e}"))?
+    loop {
+        let attempt_tx = tx.clone();
+        // ant-rs's Router::process() is a synchronous polling loop, so it
+        // runs on a blocking thread and hands results back over the async
+        // channel.
+        let result = tokio::task::spawn_blocking(move || run_blocking(attempt_tx))
+            .await
+            .map_err(|e| anyhow::anyhow!("ANT+ USB thread panicked: {e}"))?;
+
+        match result {
+            // `run_blocking` only returns `Ok(())` when the update
+            // channel's receiver was dropped, meaning the app itself is
+            // shutting down - nothing to retry.
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                tracing::warn!(
+                    ?err,
+                    retry_in_secs = RETRY_DELAY.as_secs(),
+                    "ANT+ USB source failed, retrying"
+                );
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+        }
+    }
 }
 
 fn run_blocking(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
