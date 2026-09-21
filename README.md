@@ -32,12 +32,16 @@ per-device breakdown, streamed to a browser in real time.
 ## Prerequisites
 
 - Rust (stable, 2024 edition)
-- Node.js + npm
+- Node.js + [pnpm](https://pnpm.io/)
 - `libusb-1.0-0-dev` — needed to build `rusb` (the USB backend), required
   even in `--simulate` mode since it's a compile-time dependency.
 - To use real hardware: an ANT+ USB dongle. On WSL2, attach it from the
   Windows host with `usbipd attach --wsl`; if `lsusb` stops showing the
   dongle, the passthrough dropped and needs reattaching.
+- To cross-compile a Windows binary (`make build-backend-windows`): the
+  `x86_64-pc-windows-gnu` rustup target and a mingw-w64 toolchain
+  (`x86_64-w64-mingw32-gcc`). `rusb` vendors and builds libusb from source
+  via mingw, so no separate Windows libusb install is needed.
 
 ## Usage
 
@@ -66,7 +70,7 @@ Or by hand:
 cd backend && cargo run -- --simulate --port 8080
 
 # terminal 2
-cd frontend && npm install && npm run dev
+cd frontend && pnpm install && pnpm run dev
 ```
 
 Open the URL Vite prints (default `http://localhost:5173`) — its dev server

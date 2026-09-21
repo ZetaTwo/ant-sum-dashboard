@@ -91,6 +91,15 @@ fn run_blocking(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
             )
         })?;
 
+    let descriptor = device.device_descriptor().ok();
+    tracing::info!(
+        bus = device.bus_number(),
+        address = device.address(),
+        vendor_id = descriptor.as_ref().map(|d| d.vendor_id()),
+        product_id = descriptor.as_ref().map(|d| d.product_id()),
+        "ANT+ USB device detected, opening driver"
+    );
+
     let driver = UsbDriver::new(device)
         .map_err(|e| anyhow::anyhow!("failed to open ANT+ USB driver: {e:?}"))?;
 
