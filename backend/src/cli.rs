@@ -11,7 +11,4 @@ pub struct Cli {
     /// Use a synthetic data source instead of a real ANT+ USB dongle.
     #[arg(long, env = "SIMULATE")]
     pub simulate: bool,
-
-    #[arg(long, env = "STATIC_DIR", default_value = "../frontend/dist")]
-    pub static_dir: String,
 }

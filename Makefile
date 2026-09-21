@@ -1,24 +1,25 @@
-.PHONY: install build build-backend build-backend-windows build-frontend test test-backend test-frontend \
+.PHONY: install build build-windows build-frontend test test-backend test-frontend \
         dev dev-backend dev-hardware dev-frontend run clean
 
 # Install frontend dependencies (run once, or after pulling package.json changes)
 install:
 	cd frontend && pnpm install
 
-# Build everything for production (release binary + static frontend assets)
-build: build-frontend build-backend
-
-build-backend:
-	cd backend && cargo build --release
-
-# Cross-compile the backend for Windows (requires the x86_64-pc-windows-gnu
-# rustup target and a mingw-w64 toolchain; libusb is vendored and compiled
-# via mingw, no separate Windows libusb install needed)
-build-backend-windows:
-	cd backend && cargo build --release --target x86_64-pc-windows-gnu
-
 build-frontend:
 	cd frontend && pnpm run build
+
+# Build the production release binary. Self-contained: the built frontend
+# is embedded into the executable at compile time (see ws.rs), so
+# build-frontend must run first.
+build: build-frontend
+	cd backend && cargo build --release
+
+# Cross-compile a self-contained Windows .exe (requires the
+# x86_64-pc-windows-gnu rustup target and a mingw-w64 toolchain; libusb is
+# vendored and compiled via mingw, no separate Windows libusb install
+# needed)
+build-windows: build-frontend
+	cd backend && cargo build --release --target x86_64-pc-windows-gnu
 
 # Run backend + frontend unit tests / typechecks
 test: test-backend test-frontend
@@ -49,7 +50,7 @@ dev-frontend:
 
 # Run the production build (requires `make build` first)
 run:
-	./backend/target/release/ant-sum-dashboard --port 8080 --static-dir ../frontend/dist
+	./backend/target/release/ant-sum-dashboard --port 8080
 
 clean:
 	cd backend && cargo clean

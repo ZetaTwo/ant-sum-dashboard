@@ -38,10 +38,37 @@ per-device breakdown, streamed to a browser in real time.
 - To use real hardware: an ANT+ USB dongle. On WSL2, attach it from the
   Windows host with `usbipd attach --wsl`; if `lsusb` stops showing the
   dongle, the passthrough dropped and needs reattaching.
-- To cross-compile a Windows binary (`make build-backend-windows`): the
+- To cross-compile a Windows binary (`make build-windows`): the
   `x86_64-pc-windows-gnu` rustup target and a mingw-w64 toolchain
   (`x86_64-w64-mingw32-gcc`). `rusb` vendors and builds libusb from source
   via mingw, so no separate Windows libusb install is needed.
+
+## Windows hardware setup
+
+Running against the real dongle on native Windows (not WSL2) needs one
+manual driver step first. `rusb` (the USB backend) uses `libusb`, which on
+Windows can only open a device through a generic passthrough driver like
+WinUSB — not through the vendor driver Windows assigns by default, which
+only exposes a narrow, vendor-defined API. Symptom if this hasn't been done:
+
+```
+WARN ant_sum_dashboard::ant_source::usb: ANT+ USB source failed, retrying err=failed to open ANT+ USB driver: FailedToOpenDevice(Access) retry_in_secs=5
+```
+
+Fix, one-time per machine:
+
+1. Install [Zadig](https://zadig.akeo.ie/).
+2. Options → List All Devices, then select the ANT+ USB stick (VID `0FCF`,
+   PID `1009` for the ANTUSB-m).
+3. Set the target driver to **WinUSB** (not libusb-win32 — that backend is
+   known to be flakier with `libusb-1.0`, which is what this project uses)
+   and click "Replace Driver".
+4. Unplug and replug the dongle so the new driver binding takes effect.
+
+This rebinds only the selected device, not USB globally. If the error
+persists after this, check for another process holding the dongle open
+(Garmin ANT+ Agent/USB service, Garmin Express, Zwift, TrainerRoad, or a
+previous instance of this app) and close it before retrying.
 
 ## Usage
 
@@ -52,7 +79,6 @@ CLI flags (all backend, also settable via env var — see `--help`):
 | `--port` | `PORT` | `8080` | HTTP/WebSocket port |
 | `--simulate` | `SIMULATE` | off | Use synthetic data instead of real hardware |
 | `--inactivity-timeout-secs` | `INACTIVITY_TIMEOUT_SECS` | `30` | Idle time before the displayed total resets |
-| `--static-dir` | `STATIC_DIR` | `../frontend/dist` | Where to serve the built frontend from |
 
 ### Dev
 
@@ -95,10 +121,18 @@ make build
 make run
 ```
 
-`make build` produces the release backend binary and the built frontend
-assets; `make run` serves both from a single process (backend serves
-`/ws` and the static frontend together — no separate frontend server in
-production).
+`make build` produces a single self-contained release binary: `ws.rs` uses
+`rust-embed` (via `axum-embed`) on `frontend/dist`, and in release builds
+this bakes the files into the executable at compile time, so nothing
+needs to ship alongside it — no `frontend/dist` folder required at
+runtime. In debug builds (`cargo run`, `make dev`/`dev-hardware`) the same
+code instead reads those files from disk on every request, so frontend
+changes show up without a backend rebuild. Since embedding happens at
+backend compile time, the frontend must already be built first — `make
+build` depends on `build-frontend` to guarantee that ordering. `make
+build-windows` cross-compiles the same self-contained binary for Windows
+(see Prerequisites). `make run` serves the embedded frontend and `/ws`
+from a single process.
 
 ## ANT+ network key
 

@@ -47,10 +47,10 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(state::run(update_rx, state_tx, inactivity_timeout));
 
     let ctx = ws::AppContext { rx: state_rx };
-    let app = ws::router(ctx, &cli.static_dir);
+    let app = ws::router(ctx);
 
     let addr = format!("0.0.0.0:{}", cli.port);
-    tracing::info!(%addr, static_dir = %cli.static_dir, "listening");
+    tracing::info!(%addr, "listening");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app).await?;
 

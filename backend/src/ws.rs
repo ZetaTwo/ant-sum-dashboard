@@ -3,20 +3,30 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::IntoResponse;
 use axum::routing::get;
+use axum_embed::ServeEmbed;
+use rust_embed::RustEmbed;
 use tokio::sync::watch;
-use tower_http::services::ServeDir;
 
 use crate::types::WsMessage;
+
+/// The built frontend (`frontend/dist`). In debug builds `rust-embed` reads
+/// these from disk on every request instead of embedding them, so
+/// `cargo run`/`dev-hardware` see frontend changes without a backend
+/// rebuild; release builds embed the files into the binary, so a shipped
+/// `.exe` needs no separate `frontend/dist` alongside it.
+#[derive(RustEmbed, Clone)]
+#[folder = "../frontend/dist"]
+struct Frontend;
 
 #[derive(Clone)]
 pub struct AppContext {
     pub rx: watch::Receiver<WsMessage>,
 }
 
-pub fn router(ctx: AppContext, static_dir: &str) -> Router {
+pub fn router(ctx: AppContext) -> Router {
     Router::new()
         .route("/ws", get(ws_handler))
-        .fallback_service(ServeDir::new(static_dir))
+        .fallback_service(ServeEmbed::<Frontend>::new())
         .with_state(ctx)
 }
 
