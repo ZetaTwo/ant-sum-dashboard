@@ -55,15 +55,20 @@ only exposes a narrow, vendor-defined API. Symptom if this hasn't been done:
 WARN ant_sum_dashboard::ant_source::usb: ANT+ USB source failed, retrying err=failed to open ANT+ USB driver: FailedToOpenDevice(Access) retry_in_secs=5
 ```
 
-Fix, one-time per machine:
+Fix, one-time per machine, using the built-in WinUSB driver (no Zadig
+needed):
 
-1. Install [Zadig](https://zadig.akeo.ie/).
-2. Options → List All Devices, then select the ANT+ USB stick (VID `0FCF`,
-   PID `1009` for the ANTUSB-m).
-3. Set the target driver to **WinUSB** (not libusb-win32 — that backend is
-   known to be flakier with `libusb-1.0`, which is what this project uses)
-   and click "Replace Driver".
-4. Unplug and replug the dongle so the new driver binding takes effect.
+1. Plug in the dongle and open Device Manager (Win+X → Device Manager).
+2. Find the ANT+ USB stick (VID `0FCF`, PID `1009` for the ANTUSB-m) — it
+   may show up under "Other devices" or "Universal Serial Bus devices"
+   with whatever vendor driver Windows assigned.
+3. Right-click it → Update driver → Browse my computer for drivers → Let
+   me pick from a list of available drivers on my computer.
+4. Uncheck "Show compatible hardware", then pick **WinUsb Device** from
+   the driver list (not libusb-win32 — that backend is known to be
+   flakier with `libusb-1.0`, which is what this project uses) and finish
+   the install.
+5. Unplug and replug the dongle so the new driver binding takes effect.
 
 This rebinds only the selected device, not USB globally. If the error
 persists after this, check for another process holding the dongle open
