@@ -1,0 +1,82 @@
+name: Build
+
+on:
+  workflow_call:
+    inputs:
+      retention-days:
+        type: number
+        default: 7
+
+jobs:
+  build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - run: make install
+      - run: make build-frontend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 1
+          if-no-files-found: error
+
+  build-linux:
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+      - run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      # Intentionally not `make build`: that target depends on `build-frontend`
+      # and would re-run `pnpm run build`, duplicating the frontend build this
+      # workflow already did once in the job above.
+      - run: cd backend && cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-binary
+          path: backend/target/release/ant-sum-dashboard
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
+
+  build-windows:
+    needs: build-frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+      - env:
+          DEBIAN_FRONTEND: noninteractive
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend
+      # Same intentional exception as build-linux above.
+      - run: cd backend && cargo build --release --target x86_64-pc-windows-gnu
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-binary
+          path: backend/target/x86_64-pc-windows-gnu/release/ant-sum-dashboard.exe
+          retention-days: ${{ inputs.retention-days }}
+          if-no-files-found: error
