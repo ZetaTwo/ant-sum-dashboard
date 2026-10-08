@@ -13,9 +13,14 @@ use crate::types::WsMessage;
 /// these from disk on every request instead of embedding them, so
 /// `cargo run`/`dev-hardware` see frontend changes without a backend
 /// rebuild; release builds embed the files into the binary, so a shipped
-/// `.exe` needs no separate `frontend/dist` alongside it.
+/// `.exe` needs no separate `frontend/dist` alongside it. `allow_missing`
+/// lets this compile (as an empty embed) even before `frontend/dist` has
+/// ever been built, e.g. a fresh clone running `cargo test` - without it,
+/// `#[derive(RustEmbed)]` fails at compile time in every profile, not just
+/// release, since it has to enumerate the folder's files regardless.
 #[derive(RustEmbed, Clone)]
 #[folder = "../frontend/dist"]
+#[allow_missing = true]
 struct Frontend;
 
 #[derive(Clone)]

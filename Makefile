@@ -26,14 +26,7 @@ build-windows: build-frontend
 # Run backend + frontend unit tests / typechecks
 test: test-backend test-frontend
 
-# `rust-embed`'s #[derive(RustEmbed)] on ws.rs validates that frontend/dist
-# exists at compile time in every profile, not just release (it only
-# *reads* dist's contents from disk at runtime in debug builds - the
-# directory itself must still be present to compile at all). An empty
-# directory satisfies this without requiring a real frontend build, so
-# cargo test works standalone on a fresh clone.
 test-backend:
-	mkdir -p frontend/dist
 	cd backend && cargo test
 
 test-frontend:
