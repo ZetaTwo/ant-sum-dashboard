@@ -139,6 +139,55 @@ build-windows` cross-compiles the same self-contained binary for Windows
 (see Prerequisites). `make run` serves the embedded frontend and `/ws`
 from a single process.
 
+## Windows Service
+
+The same `.exe` produced by `make build-windows` can run either as a normal
+console program or, unattended, as a Windows Service (auto-start on boot,
+no logged-in user or console required). The binary detects which mode it's
+in automatically — nothing to pass at build time.
+
+There's no built-in installer; registering the service is a one-time manual
+step, done from an **elevated** (Administrator) Command Prompt or
+PowerShell:
+
+```cmd
+sc.exe create AntSumDashboard binPath= "\"C:\Program Files\ant-sum-dashboard\ant-sum-dashboard.exe\" --port 8080" start= auto
+sc.exe description AntSumDashboard "ANT+ Sum Dashboard"
+sc.exe start AntSumDashboard
+```
+
+Or the PowerShell equivalent:
+
+```powershell
+New-Service -Name AntSumDashboard -BinaryPathName '"C:\Program Files\ant-sum-dashboard\ant-sum-dashboard.exe" --port 8080' -StartupType Automatic
+Start-Service AntSumDashboard
+```
+
+To stop and remove it later: `sc.exe stop AntSumDashboard` /
+`sc.exe delete AntSumDashboard` (or `Stop-Service` / `Remove-Service`).
+
+Notes:
+
+- Copy the `.exe` to a permanent location first (e.g.
+  `C:\Program Files\ant-sum-dashboard\`) — don't point `binPath=` at a
+  build or temp directory.
+- `binPath=` needs the space after `=`, and the whole path+args string as
+  one quoted token with inner quotes escaped, as shown above.
+- A service does **not** inherit a logged-in user's environment, so the
+  `PORT` / `SIMULATE` / `INACTIVITY_TIMEOUT_SECS` env vars won't reach it —
+  pass flags directly in `binPath=` instead.
+- With no console to log to, service mode writes daily-rolling log files
+  instead of stdout, under `%ProgramData%\ant-sum-dashboard\logs` by
+  default (override with `--log-dir` or the `LOG_DIR` env var set in the
+  service's registry `Environment` value). The service account (LocalSystem
+  by default) must be able to write there.
+- The [Windows hardware setup](#windows-hardware-setup) WinUSB driver step
+  above still applies the same way regardless of which account runs the
+  service.
+- `sc.exe query AntSumDashboard`, or the System log in Event Viewer, show
+  whether the SCM itself considers the service started/stopped — app-level
+  logs only start once the process gets as far as opening its log file.
+
 ## ANT+ network key
 
 Real device reception requires the ANT+ Managed Network key, which Garmin

@@ -1,58 +1,40 @@
 mod ant_source;
+mod app;
 mod cli;
 mod fe_c;
+mod logging;
 mod simulator;
 mod state;
 mod types;
 mod ws;
 
-use std::time::Duration;
+#[cfg(windows)]
+mod service_win;
 
 use clap::Parser;
-use tokio::sync::{mpsc, watch};
+use cli::Cli;
 
-use crate::types::WsMessage;
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
-
-    let cli = cli::Cli::parse();
-    let (update_tx, update_rx) = mpsc::channel(256);
-    let inactivity_timeout = Duration::from_secs(cli.inactivity_timeout_secs);
-
-    if cli.simulate {
-        tracing::info!("starting simulator data source");
-        tokio::spawn(async move {
-            if let Err(err) = simulator::run(update_tx, inactivity_timeout).await {
-                tracing::error!(?err, "simulator source exited");
-            }
-        });
-    } else {
-        tracing::info!("starting real ANT+ USB data source");
-        tokio::spawn(async move {
-            if let Err(err) = ant_source::run(update_tx).await {
-                tracing::error!(?err, "ANT+ USB source exited");
-            }
-        });
+    #[cfg(windows)]
+    {
+        // If this process was launched by the Windows Service Control
+        // Manager, this blocks until the service stops and returns Ok(()).
+        // If not (console, debugger, double-click), it fails fast and we
+        // fall through to the normal interactive path below.
+        if service_win::try_run_as_service(cli.clone()).is_ok() {
+            return Ok(());
+        }
     }
 
-    let initial_state = WsMessage::State {
-        total_distance_m: 0.0,
-        session_started_at_ms: None,
-        devices: Vec::new(),
-    };
-    let (state_tx, state_rx) = watch::channel(initial_state);
+    run_console(cli)
+}
 
-    tokio::spawn(state::run(update_rx, state_tx, inactivity_timeout));
-
-    let ctx = ws::AppContext { rx: state_rx };
-    let app = ws::router(ctx);
-
-    let addr = format!("0.0.0.0:{}", cli.port);
-    tracing::info!(%addr, "listening");
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    axum::serve(listener, app).await?;
-
-    Ok(())
+fn run_console(cli: Cli) -> anyhow::Result<()> {
+    logging::init_console();
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(app::run(cli, async {
+        let _ = tokio::signal::ctrl_c().await;
+    }))
 }

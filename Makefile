@@ -17,7 +17,9 @@ build: build-frontend
 # Cross-compile a self-contained Windows .exe (requires the
 # x86_64-pc-windows-gnu rustup target and a mingw-w64 toolchain; libusb is
 # vendored and compiled via mingw, no separate Windows libusb install
-# needed)
+# needed). The same .exe also doubles as a Windows Service executable (see
+# README "Windows Service" section) - installing it as a service is a
+# manual `sc.exe create` step, not a separate build.
 build-windows: build-frontend
 	cd backend && cargo build --release --target x86_64-pc-windows-gnu
 
