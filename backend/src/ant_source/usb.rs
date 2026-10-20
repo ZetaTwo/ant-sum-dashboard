@@ -263,7 +263,7 @@ fn to_device_update(message: &RxMessage, accumulators: &mut Accumulators) -> Opt
     }
     // Only the General FE Data page carries distance.
     let page = parse_page16(&data.payload.data)?;
-    tracing::debug!(
+    tracing::trace!(
         device_number = channel_id.device_number,
         equipment_type_byte = page.equipment_type_byte,
         distance_raw = ?page.distance_raw,

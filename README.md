@@ -98,6 +98,9 @@ CLI flags (all backend, also settable via env var — see `--help`):
 | `--set-start-factor` | `SET_START_FACTOR` | `3.0` | Next set starts above this multiple of the rest's level |
 | `--set-min-speed-mps` | `SET_MIN_SPEED_MPS` | `0.5` | Minimum mean speed per device to start a set or keep a session going |
 
+Logging is controlled by `RUST_LOG`; `RUST_LOG=ant_sum_dashboard=trace` logs
+every raw reading from each machine.
+
 ### Dev
 
 With a `Makefile` shortcut:
