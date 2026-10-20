@@ -13,13 +13,19 @@ struct FakeDevice {
     tick_interval: Duration,
 }
 
+/// Sets per simulated session, each `WORK` long followed by `SHORT_REST`.
+const SETS_PER_SESSION: u32 = 3;
+const WORK: Duration = Duration::from_secs(40);
+const SHORT_REST: Duration = Duration::from_secs(20);
+/// Fraction of working speed devices keep reporting while resting. Some
+/// real machines do this (a spinning-down flywheel, handles drifting), and
+/// it's what set detection has to see through.
+const REST_TRICKLE: f64 = 0.05;
+
 /// Mirrors `ant_source::usb::run`'s signature so `main.rs` can pick either
 /// source without the rest of the pipeline (state/ws) knowing the
 /// difference.
-pub async fn run(
-    tx: mpsc::Sender<DeviceUpdate>,
-    inactivity_timeout: Duration,
-) -> anyhow::Result<()> {
+pub async fn run(tx: mpsc::Sender<DeviceUpdate>, session_timeout: Duration) -> anyhow::Result<()> {
     let devices = vec![
         FakeDevice {
             device_id: 1001,
@@ -44,43 +50,23 @@ pub async fn run(
         },
     ];
 
-    // Real ANT+ hardware keeps broadcasting on a fixed schedule even while
-    // idle, just with frozen distance (see ant_source::usb / the
-    // `apply_update` "moved" check in state.rs, added after exactly this
-    // was found to silently defeat the inactivity reset). Cycle each
-    // device between moving and idle-but-still-transmitting so `--simulate`
-    // exercises the reset path the same way real hardware does.
-    let active_duration = inactivity_timeout.mul_f64(2.0);
-    let cycle_duration = active_duration + inactivity_timeout.mul_f64(1.1);
-    // Shared clock: every device derives "am I active or paused right now"
-    // fresh each tick from the same `start` (elapsed % cycle_duration),
-    // rather than each device accumulating its own independent phase-timer
-    // loop. The latter drifted the three devices out of sync over many
-    // cycles, because 1.1x the timeout is not a whole multiple of the 1s
-    // tick interval, so each device's own loop rounded to a slightly
-    // different number of ticks per pause - an error that compounded cycle
-    // over cycle. Computing the phase fresh from an absolute start time has
-    // nothing to accumulate.
-    //
-    // `start` is also used below as the anchor for every device's tick
-    // schedule (via `interval_at`, not plain `interval`), so all three
-    // devices tick at the exact same wall-clock instants instead of each
-    // starting its own 1s cadence from whenever its task happened to get
-    // scheduled - otherwise a small constant per-device offset (up to one
-    // tick) eats into the pause window's margin and can skip a reset on
-    // some cycles even without any drift.
+    // A few sets with short trickling rests, then a rest long enough to end
+    // the session, so `--simulate` exercises both reset levels.
+    let session_cycle = (WORK + SHORT_REST) * SETS_PER_SESSION + session_timeout.mul_f64(1.1);
+    // Shared clock: every device derives "am I working or resting right
+    // now" fresh each tick from the same `start`, rather than each device
+    // accumulating its own independent phase timer, which drifts the
+    // devices out of sync over many cycles. `start` is also used below as
+    // the anchor for every device's tick schedule (via `interval_at`, not
+    // plain `interval`), so all devices tick at the same instants instead
+    // of each starting its cadence whenever its task happened to get
+    // scheduled.
     let start = tokio::time::Instant::now();
 
     let mut handles = Vec::new();
     for device in devices {
         let tx = tx.clone();
-        handles.push(tokio::spawn(run_device(
-            device,
-            tx,
-            start,
-            active_duration,
-            cycle_duration,
-        )));
+        handles.push(tokio::spawn(run_device(device, tx, start, session_cycle)));
     }
 
     for handle in handles {
@@ -93,30 +79,26 @@ async fn run_device(
     mut device: FakeDevice,
     tx: mpsc::Sender<DeviceUpdate>,
     start: tokio::time::Instant,
-    active_duration: Duration,
-    cycle_duration: Duration,
+    session_cycle: Duration,
 ) {
     let mut interval = tokio::time::interval_at(start, device.tick_interval);
     loop {
         interval.tick().await;
 
-        let pos_in_cycle = start.elapsed().as_secs_f64() % cycle_duration.as_secs_f64();
-        let moving = pos_in_cycle < active_duration.as_secs_f64();
-
-        let speed_mps = if moving {
-            let elapsed_s = device.tick_interval.as_secs_f64();
-            let jitter = rand::thread_rng().gen_range(0.7..1.3);
-            device.distance_m += device.speed_mps as f64 * elapsed_s * jitter;
-            device.speed_mps
+        let effort = if is_working(start.elapsed(), session_cycle) {
+            1.0
         } else {
-            0.0
+            REST_TRICKLE
         };
+        let jitter = rand::thread_rng().gen_range(0.7..1.3);
+        let speed_mps = device.speed_mps as f64 * effort * jitter;
+        device.distance_m += speed_mps * device.tick_interval.as_secs_f64();
 
         let update = DeviceUpdate {
             device_id: device.device_id,
             device_type: device.device_type,
             distance_m: device.distance_m,
-            speed_mps: Some(speed_mps),
+            speed_mps: Some(speed_mps as f32),
             heart_rate: None,
             timestamp: Instant::now(),
         };
@@ -124,4 +106,10 @@ async fn run_device(
             return; // receiver gone, shut this device down
         }
     }
+}
+
+fn is_working(elapsed: Duration, session_cycle: Duration) -> bool {
+    let set_cycle = (WORK + SHORT_REST).as_secs_f64();
+    let in_session = elapsed.as_secs_f64() % session_cycle.as_secs_f64();
+    in_session < set_cycle * SETS_PER_SESSION as f64 && in_session % set_cycle < WORK.as_secs_f64()
 }

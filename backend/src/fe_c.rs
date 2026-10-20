@@ -152,7 +152,16 @@ mod tests {
 
     #[test]
     fn parse_page16_treats_0xffff_speed_as_invalid() {
-        let payload = [0x10, 25, 10, 42, 0xFF, 0xFF, 150, DISTANCE_TRAVELED_ENABLED_BIT];
+        let payload = [
+            0x10,
+            25,
+            10,
+            42,
+            0xFF,
+            0xFF,
+            150,
+            DISTANCE_TRAVELED_ENABLED_BIT,
+        ];
         let parsed = parse_page16(&payload).unwrap();
         assert_eq!(parsed.speed_mps, None);
     }

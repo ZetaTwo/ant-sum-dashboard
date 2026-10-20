@@ -9,14 +9,20 @@
   <body>
     <main>
       <div id="status" class="status status--connecting">connecting…</div>
-      <div id="total" class="total">0 m</div>
-      <div id="session-info" class="session-info"></div>
+      <div id="set-distance" class="total">0 m</div>
+      <div id="set-info" class="info"></div>
+      <div class="session">
+        <span class="session-label">Session</span>
+        <span id="session-distance">0 m</span>
+        <span id="session-info" class="info"></span>
+      </div>
       <table id="devices">
         <thead>
           <tr>
             <th>Device</th>
             <th>Type</th>
-            <th>Distance</th>
+            <th>Set</th>
+            <th>Session</th>
           </tr>
         </thead>
         <tbody id="device-rows"></tbody>

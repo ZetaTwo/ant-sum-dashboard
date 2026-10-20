@@ -14,12 +14,18 @@ pub async fn run(
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
     let (update_tx, update_rx) = mpsc::channel(256);
-    let inactivity_timeout = Duration::from_secs(cli.inactivity_timeout_secs);
+    let session_timeout = Duration::from_secs(cli.session_timeout_secs);
+    let state_config = crate::state::Config {
+        session_timeout,
+        set_end_fraction: cli.set_end_fraction,
+        set_start_fraction: cli.set_start_fraction,
+        set_min_speed_mps: cli.set_min_speed_mps,
+    };
 
     if cli.simulate {
         tracing::info!("starting simulator data source");
         tokio::spawn(async move {
-            if let Err(err) = crate::simulator::run(update_tx, inactivity_timeout).await {
+            if let Err(err) = crate::simulator::run(update_tx, session_timeout).await {
                 tracing::error!(?err, "simulator source exited");
             }
         });
@@ -33,13 +39,13 @@ pub async fn run(
     }
 
     let initial_state = WsMessage::State {
-        total_distance_m: 0.0,
-        session_started_at_ms: None,
+        set: None,
+        session: None,
         devices: Vec::new(),
     };
     let (state_tx, state_rx) = watch::channel(initial_state);
 
-    tokio::spawn(crate::state::run(update_rx, state_tx, inactivity_timeout));
+    tokio::spawn(crate::state::run(update_rx, state_tx, state_config));
 
     let ctx = crate::ws::AppContext { rx: state_rx };
     let app = crate::ws::router(ctx);

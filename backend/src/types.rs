@@ -55,21 +55,36 @@ pub struct DeviceUpdate {
 pub struct DeviceRow {
     pub device_id: u16,
     pub device_type: &'static str,
-    pub distance_m: f64,
+    pub set_distance_m: f64,
+    pub session_distance_m: f64,
     pub last_seen_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SetView {
+    pub distance_m: f64,
+    pub started_at_ms: u64,
+    /// `None` while the set is running. Once it ends, the set stays on
+    /// screen with its final numbers until the next set starts.
+    pub ended_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionView {
+    pub distance_m: f64,
+    pub started_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsMessage {
     State {
-        total_distance_m: f64,
-        /// `None` when no session is currently running - either at startup
-        /// before any device has ever reported, or right after an
-        /// inactivity reset before new data has arrived. Distinct from a
-        /// real epoch-ms timestamp so the frontend can't mistake "no
-        /// session yet" for "session started at the Unix epoch".
-        session_started_at_ms: Option<u64>,
+        /// The current or most recent set of this session; `None` when no
+        /// session is running.
+        set: Option<SetView>,
+        /// `None` until the first set starts, and again after the session
+        /// times out.
+        session: Option<SessionView>,
         devices: Vec<DeviceRow>,
     },
 }

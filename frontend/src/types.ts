@@ -5,15 +5,29 @@
 export interface DeviceRow {
   device_id: number;
   device_type: "bike" | "rower" | "nordic_skier" | "other";
-  distance_m: number;
+  set_distance_m: number;
+  session_distance_m: number;
   last_seen_ms: number;
+}
+
+export interface SetView {
+  distance_m: number;
+  started_at_ms: number;
+  // null while the set is running; a finished set stays on screen until
+  // the next one starts.
+  ended_at_ms: number | null;
+}
+
+export interface SessionView {
+  distance_m: number;
+  started_at_ms: number;
 }
 
 export interface StateMessage {
   type: "state";
-  total_distance_m: number;
-  // null when no session is currently running (before any device has ever
-  // reported, or right after an inactivity reset) - serde's Option<u64>.
-  session_started_at_ms: number | null;
+  // null when no session is running.
+  set: SetView | null;
+  // null until the first set starts, and again after the session times out.
+  session: SessionView | null;
   devices: DeviceRow[];
 }

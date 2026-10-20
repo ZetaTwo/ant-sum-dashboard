@@ -2,7 +2,9 @@ import type { StateMessage, DeviceRow } from "./types";
 
 const STALE_AFTER_MS = 5000;
 
-const totalEl = document.getElementById("total")!;
+const setDistanceEl = document.getElementById("set-distance")!;
+const setInfoEl = document.getElementById("set-info")!;
+const sessionDistanceEl = document.getElementById("session-distance")!;
 const sessionInfoEl = document.getElementById("session-info")!;
 const rowsEl = document.getElementById("device-rows")!;
 const statusEl = document.getElementById("status")!;
@@ -21,6 +23,13 @@ function formatDistance(m: number): string {
   return `${m.toFixed(0)} m`;
 }
 
+function formatDuration(ms: number): string {
+  const totalSecs = Math.max(0, Math.floor(ms / 1000));
+  const mins = Math.floor(totalSecs / 60);
+  const secs = String(totalSecs % 60).padStart(2, "0");
+  return `${mins}:${secs}`;
+}
+
 export function setConnectionStatus(connected: boolean): void {
   statusEl.textContent = connected ? "connected" : "reconnecting…";
   statusEl.className = `status ${connected ? "status--connected" : "status--connecting"}`;
@@ -28,41 +37,44 @@ export function setConnectionStatus(connected: boolean): void {
 
 export function renderState(msg: StateMessage): void {
   lastState = msg;
-  totalEl.textContent = formatDistance(msg.total_distance_m);
+  render(msg);
+}
 
-  if (msg.session_started_at_ms === null) {
-    sessionInfoEl.textContent = "waiting for data…";
+function render(msg: StateMessage): void {
+  const now = Date.now();
+  const { set, session } = msg;
+
+  setDistanceEl.textContent = formatDistance(set?.distance_m ?? 0);
+  if (set === null) {
+    setInfoEl.textContent = "waiting for data…";
+  } else if (set.ended_at_ms === null) {
+    setInfoEl.textContent = `set · ${formatDuration(now - set.started_at_ms)}`;
   } else {
-    const startedAgo = Math.max(0, Date.now() - msg.session_started_at_ms);
-    sessionInfoEl.textContent = `session running for ${Math.floor(startedAgo / 1000)}s`;
+    const setLength = formatDuration(set.ended_at_ms - set.started_at_ms);
+    setInfoEl.textContent = `last set ${setLength} · resting ${formatDuration(now - set.ended_at_ms)}`;
   }
+
+  sessionDistanceEl.textContent = formatDistance(session?.distance_m ?? 0);
+  sessionInfoEl.textContent =
+    session === null ? "" : formatDuration(now - session.started_at_ms);
 
   const rows = [...msg.devices].sort((a, b) => a.device_id - b.device_id);
   rowsEl.replaceChildren(
     ...rows.map((d) => {
       const tr = document.createElement("tr");
-      tr.dataset.deviceId = String(d.device_id);
-      tr.className = isStale(d) ? "stale" : "";
+      tr.className = now - d.last_seen_ms > STALE_AFTER_MS ? "stale" : "";
       tr.innerHTML = `
         <td>${d.device_id}</td>
         <td>${deviceTypeLabels[d.device_type] ?? d.device_type}</td>
-        <td>${formatDistance(d.distance_m)}</td>
+        <td>${formatDistance(d.set_distance_m)}</td>
+        <td>${formatDistance(d.session_distance_m)}</td>
       `;
       return tr;
     }),
   );
 }
 
-function isStale(d: DeviceRow): boolean {
-  return Date.now() - d.last_seen_ms > STALE_AFTER_MS;
-}
-
-// Re-evaluate staleness independent of new WS messages, since a device can
-// go quiet without the backend sending a fresh state update.
+// Keep durations and staleness current between messages.
 setInterval(() => {
-  if (!lastState) return;
-  for (const tr of rowsEl.querySelectorAll<HTMLTableRowElement>("tr[data-device-id]")) {
-    const device = lastState.devices.find((d) => String(d.device_id) === tr.dataset.deviceId);
-    if (device) tr.className = isStale(device) ? "stale" : "";
-  }
+  if (lastState) render(lastState);
 }, 1000);

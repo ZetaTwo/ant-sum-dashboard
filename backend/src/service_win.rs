@@ -5,8 +5,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use windows_service::service::{
-    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
-    ServiceType,
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
 };
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::{define_windows_service, service_dispatcher};
@@ -53,16 +52,15 @@ fn run_service() -> anyhow::Result<()> {
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
-    let status_handle = service_control_handler::register(SERVICE_NAME, move |control| {
-        match control {
+    let status_handle =
+        service_control_handler::register(SERVICE_NAME, move |control| match control {
             ServiceControl::Stop | ServiceControl::Shutdown => {
                 let _ = shutdown_tx.send(true);
                 ServiceControlHandlerResult::NoError
             }
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
             _ => ServiceControlHandlerResult::NotImplemented,
-        }
-    })?;
+        })?;
 
     let set_status = |state: ServiceState, controls_accepted: ServiceControlAccept| {
         status_handle.set_service_status(ServiceStatus {

@@ -19,13 +19,19 @@ per-device breakdown, streamed to a browser in real time.
 - Each device's raw distance counter (a rolling 1-byte, 0-255m value) is
   unrolled into a monotonically increasing total for the life of the
   process.
-- If no device reports *new* distance for `--inactivity-timeout-secs`
-  (default 30), the dashboard's displayed totals reset to zero. This is a
-  presentation-layer reset only — the real per-device totals in memory are
-  never wiped, so the reset just changes what's currently shown, not what's
-  tracked. Devices keep broadcasting on a fixed schedule even while idle, so
-  activity is defined as distance actually increasing, not merely a message
-  arriving.
+- Activity is grouped into two nested levels, both presentation-layer only
+  (baselines snapshotted from the per-device totals, which are never
+  wiped):
+  - A **set** is one bout of group effort. It ends once activity drops
+    below `--set-end-fraction` of the set's own recent average, rather than
+    on complete inactivity: rests can be short, and some machines keep
+    reporting a trickle of movement while idle. A finished set stays on
+    screen until the next one starts, which needs activity above
+    `--set-start-fraction` of the previous set's average (and at least
+    `--set-min-speed-mps`). Activity is measured as mean speed per connected
+    device, so the thresholds behave the same with 2 machines as with 10.
+  - A **session** spans consecutive sets and resets to zero once
+    `--session-timeout-secs` pass after a set without a new one starting.
 - `fe_c.rs` parses ANT+ FE-C page 16 ("General FE Data") itself — the `ant`
   crate this project depends on has no built-in FE-C profile support.
 
@@ -83,7 +89,10 @@ CLI flags (all backend, also settable via env var — see `--help`):
 |---|---|---|---|
 | `--port` | `PORT` | `8080` | HTTP/WebSocket port |
 | `--simulate` | `SIMULATE` | off | Use synthetic data instead of real hardware |
-| `--inactivity-timeout-secs` | `INACTIVITY_TIMEOUT_SECS` | `30` | Idle time before the displayed total resets |
+| `--session-timeout-secs` | `SESSION_TIMEOUT_SECS` | `300` | Rest after a set before the session resets |
+| `--set-end-fraction` | `SET_END_FRACTION` | `0.25` | Set ends below this fraction of its recent average |
+| `--set-start-fraction` | `SET_START_FRACTION` | `0.4` | Next set starts above this fraction of the previous set's average |
+| `--set-min-speed-mps` | `SET_MIN_SPEED_MPS` | `0.5` | Minimum mean speed per device to start a set |
 
 ### Dev
 
@@ -174,7 +183,7 @@ Notes:
 - `binPath=` needs the space after `=`, and the whole path+args string as
   one quoted token with inner quotes escaped, as shown above.
 - A service does **not** inherit a logged-in user's environment, so the
-  `PORT` / `SIMULATE` / `INACTIVITY_TIMEOUT_SECS` env vars won't reach it —
+  `PORT` / `SIMULATE` / `SESSION_TIMEOUT_SECS` / ... env vars won't reach it —
   pass flags directly in `binPath=` instead.
 - With no console to log to, service mode writes daily-rolling log files
   instead of stdout, under `%ProgramData%\ant-sum-dashboard\logs` by
