@@ -5,27 +5,31 @@
 //! must not be used).
 //!
 //! `ant-rs` has no FE-C (Fitness Equipment) profile, so this module talks
-//! to the radio at the raw message level (`Router`) and hands 8-byte
-//! broadcast payloads to `crate::fe_c::parse_page16` ourselves - the same
-//! parser used in tests. Multiple devices are received on a single channel
-//! via ANT+ continuous scan mode (`OpenRxScanMode`), with extended
-//! broadcast messages (`EnableExtRxMessages`) carrying each payload's
-//! originating device number/type so devices can be told apart without
-//! pre-pairing.
+//! to the radio at the raw message level and hands 8-byte broadcast
+//! payloads to `crate::fe_c::parse_page16` ourselves - the same parser used
+//! in tests. Multiple devices are received on a single channel via ANT+
+//! continuous scan mode (`OpenRxScanMode`), with extended broadcast
+//! messages (`EnableExtRxMessages`) carrying each payload's originating
+//! device number/type so devices can be told apart without pre-pairing.
+//!
+//! The driver is used directly rather than through `ant::router::Router`:
+//! the router collapses every `DriverError` into a detail-less
+//! `RouterError::DriverError()`, which makes a single corrupt frame
+//! indistinguishable from the dongle disappearing. Talking to the driver
+//! keeps `DriverError::SystemError` (USB I/O failure, reconnect) apart from
+//! frame parse errors (the driver has already skipped past the bad byte,
+//! so just keep reading).
 
 use std::collections::HashMap;
-use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
-use ant::channel::mpsc::{RxChannel, TxChannel};
-use ant::drivers::{UsbDriver, is_ant_usb_device_from_device};
+use ant::drivers::{Driver, DriverError, UsbDriver, is_ant_usb_device_from_device};
 use ant::messages::RxMessage;
 use ant::messages::config::{
     AssignChannel, ChannelId, ChannelRfFrequency, ChannelType, EnableExtRxMessages, SetNetworkKey,
 };
-use ant::messages::control::OpenRxScanMode;
-use ant::router::Router;
-use rusb::DeviceList;
+use ant::messages::control::{OpenRxScanMode, RequestMessage, RequestableMessageId, ResetSystem};
+use rusb::{DeviceList, GlobalContext};
 use tokio::sync::mpsc;
 
 use crate::fe_c::{DistanceAccumulator, parse_page16};
@@ -35,6 +39,8 @@ use crate::types::{DeviceUpdate, EquipmentType};
 const ANT_PLUS_RF_FREQUENCY_OFFSET: u8 = 57;
 /// ANT+ FE-C (Fitness Equipment) device type, per the ANT+ device profile.
 const FE_C_DEVICE_TYPE: u8 = 0x11;
+/// The single scan-mode channel everything is received on.
+const CHANNEL: u8 = 0;
 
 /// The ANT+ Managed Network key. Formally gated behind Garmin's ANT+
 /// Adopter program registration, but this exact value is openly published
@@ -53,15 +59,37 @@ const ANT_PLUS_NETWORK_KEY: [u8; 8] = [0xB9, 0xA5, 0x21, 0xFB, 0xBD, 0x72, 0xC3,
 /// for the user to reattach the device.
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 
+/// How long to wait for the stick to answer the capabilities request sent
+/// right after a reset.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The stick only talks when a device is in range, so silence alone can't
+/// tell "nobody's here" from "the stick has stopped responding" (e.g. after
+/// the host resumes from sleep). A channel status request every
+/// `PROBE_INTERVAL` guarantees some traffic; none at all for
+/// `STALL_TIMEOUT` means the connection is dead and gets rebuilt.
+const PROBE_INTERVAL: Duration = Duration::from_secs(5);
+const STALL_TIMEOUT: Duration = Duration::from_secs(15);
+
+type Accumulators = HashMap<u16, DistanceAccumulator>;
+
 pub async fn run(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
+    // Outlives individual connections: a fresh accumulator would restart
+    // that device's total at 0 m after every reconnect. Kept, the first
+    // reading after a reconnect is measured against the last one before
+    // it, so distance covered during the gap still counts.
+    let mut accumulators = Accumulators::new();
     loop {
         let attempt_tx = tx.clone();
-        // ant-rs's Router::process() is a synchronous polling loop, so it
-        // runs on a blocking thread and hands results back over the async
-        // channel.
-        let result = tokio::task::spawn_blocking(move || run_blocking(attempt_tx))
-            .await
-            .map_err(|e| anyhow::anyhow!("ANT+ USB thread panicked: {e}"))?;
+        // ant-rs's driver is a synchronous polling API, so it runs on a
+        // blocking thread and hands results back over the async channel.
+        let (result, returned) = tokio::task::spawn_blocking(move || {
+            let result = run_blocking(attempt_tx, &mut accumulators);
+            (result, accumulators)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("ANT+ USB thread panicked: {e}"))?;
+        accumulators = returned;
 
         match result {
             // `run_blocking` only returns `Ok(())` when the update
@@ -80,7 +108,10 @@ pub async fn run(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
     }
 }
 
-fn run_blocking(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
+fn run_blocking(
+    tx: mpsc::Sender<DeviceUpdate>,
+    accumulators: &mut Accumulators,
+) -> anyhow::Result<()> {
     let device = DeviceList::new()?
         .iter()
         .find(is_ant_usb_device_from_device)
@@ -100,102 +131,138 @@ fn run_blocking(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
         "ANT+ USB device detected, opening driver"
     );
 
-    let driver = UsbDriver::new(device)
+    let mut driver = UsbDriver::new(device)
         .map_err(|e| anyhow::anyhow!("failed to open ANT+ USB driver: {e:?}"))?;
 
-    let (_unused_tx, unused_rx) = std_mpsc::channel();
-    let mut router = Router::new(
-        driver,
-        RxChannel {
-            receiver: unused_rx,
-        },
-    )
-    .map_err(|e| anyhow::anyhow!("Router::new failed: {e:?}"))?;
+    reset(&mut driver)?;
 
-    let (chan_tx, chan_rx) = std_mpsc::channel();
-    let channel_number = router
-        .add_channel(TxChannel { sender: chan_tx })
-        .map_err(|e| anyhow::anyhow!("add_channel failed: {e:?}"))?;
-
-    router
-        .send(&SetNetworkKey::new(0, ANT_PLUS_NETWORK_KEY))
-        .map_err(|e| anyhow::anyhow!("SetNetworkKey failed: {e:?}"))?;
-    router
-        .send(&AssignChannel::new(
-            channel_number,
-            ChannelType::BidirectionalSlave,
-            0,
-            None,
-        ))
-        .map_err(|e| anyhow::anyhow!("AssignChannel failed: {e:?}"))?;
-    router
-        .send(&ChannelId::new_wildcard(channel_number))
-        .map_err(|e| anyhow::anyhow!("ChannelId failed: {e:?}"))?;
-    router
-        .send(&ChannelRfFrequency::new(
-            channel_number,
-            ANT_PLUS_RF_FREQUENCY_OFFSET,
-        ))
-        .map_err(|e| anyhow::anyhow!("ChannelRfFrequency failed: {e:?}"))?;
-    router
-        .send(&EnableExtRxMessages::new(true))
-        .map_err(|e| anyhow::anyhow!("EnableExtRxMessages failed: {e:?}"))?;
-    router
-        .send(&OpenRxScanMode::new(None))
-        .map_err(|e| anyhow::anyhow!("OpenRxScanMode failed: {e:?}"))?;
+    send(&mut driver, &SetNetworkKey::new(0, ANT_PLUS_NETWORK_KEY))?;
+    send(
+        &mut driver,
+        &AssignChannel::new(CHANNEL, ChannelType::BidirectionalSlave, 0, None),
+    )?;
+    send(&mut driver, &ChannelId::new_wildcard(CHANNEL))?;
+    send(
+        &mut driver,
+        &ChannelRfFrequency::new(CHANNEL, ANT_PLUS_RF_FREQUENCY_OFFSET),
+    )?;
+    send(&mut driver, &EnableExtRxMessages::new(true))?;
+    send(&mut driver, &OpenRxScanMode::new(None))?;
 
     tracing::info!("ANT+ USB radio initialized, listening in continuous scan mode");
 
-    let mut accumulators: HashMap<u16, DistanceAccumulator> = HashMap::new();
+    let mut last_rx = Instant::now();
+    let mut last_probe = Instant::now();
 
     loop {
-        router
-            .process()
-            .map_err(|e| anyhow::anyhow!("router.process failed: {e:?}"))?;
-
-        while let Ok(msg) = chan_rx.try_recv() {
-            let RxMessage::BroadcastData(data) = &msg.message else {
+        while let Some(message) = next_message(&mut driver)? {
+            last_rx = Instant::now();
+            let Some(update) = to_device_update(&message, accumulators) else {
                 continue;
-            };
-            let Some(channel_id) = data.extended_info.and_then(|ext| ext.channel_id_output) else {
-                continue; // no device id info, can't attribute this to a device
-            };
-            let device_type_id: u8 = channel_id.device_type.device_type_id.into();
-            if device_type_id != FE_C_DEVICE_TYPE {
-                continue;
-            }
-            let Some(page) = parse_page16(&data.payload.data) else {
-                continue; // not the General FE Data page
-            };
-            tracing::debug!(
-                device_number = channel_id.device_number,
-                equipment_type_byte = page.equipment_type_byte,
-                distance_raw = ?page.distance_raw,
-                speed_mps = ?page.speed_mps,
-                fe_state = ?page.fe_state,
-                "page16 parsed"
-            );
-            let Some(distance_raw) = page.distance_raw else {
-                continue; // device doesn't report distance
-            };
-
-            let device_id = channel_id.device_number;
-            let accumulator = accumulators.entry(device_id).or_default();
-            let distance_m = accumulator.accumulate(distance_raw);
-
-            let update = DeviceUpdate {
-                device_id,
-                device_type: EquipmentType::from_fe_c_byte(page.equipment_type_byte),
-                distance_m,
-                speed_mps: page.speed_mps,
-                heart_rate: page.heart_rate,
-                timestamp: Instant::now(),
             };
             if tx.blocking_send(update).is_err() {
                 return Ok(()); // receiver gone, shut down
             }
         }
 
+        if last_rx.elapsed() >= STALL_TIMEOUT {
+            anyhow::bail!("no response from ANT+ USB stick for {STALL_TIMEOUT:?}");
+        }
+        if last_probe.elapsed() >= PROBE_INTERVAL {
+            send(
+                &mut driver,
+                &RequestMessage::new(CHANNEL, RequestableMessageId::ChannelStatus, None),
+            )?;
+            last_probe = Instant::now();
+        }
+
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Resets the radio and waits for it to come back, mirroring the handshake
+/// `ant::router::Router::new` performs: reset, purge whatever was already
+/// queued, then use the capabilities response as the "ready" signal.
+fn reset(driver: &mut UsbDriver<GlobalContext>) -> anyhow::Result<()> {
+    send(driver, &ResetSystem::new())?;
+    while driver.get_message().unwrap_or(None).is_some() {}
+    send(
+        driver,
+        &RequestMessage::new(0, RequestableMessageId::Capabilities, None),
+    )?;
+
+    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    while Instant::now() < deadline {
+        if let Some(message) = next_message(driver)?
+            && matches!(message, RxMessage::Capabilities(_))
+        {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("ANT+ USB stick did not respond after reset")
+}
+
+/// Returns the next complete message, `None` once the driver's buffer is
+/// drained, or an error if the USB connection itself failed.
+fn next_message(driver: &mut UsbDriver<GlobalContext>) -> anyhow::Result<Option<RxMessage>> {
+    loop {
+        match driver.get_message() {
+            Ok(message) => return Ok(message.map(|m| m.message)),
+            Err(DriverError::SystemError(err)) => {
+                anyhow::bail!("ANT+ USB read failed: {err:?}")
+            }
+            // A malformed frame (bad checksum, unknown message id, ...).
+            // The driver has already dropped the offending byte and will
+            // resynchronize on the next sync byte, so keep reading.
+            Err(err) => tracing::warn!(?err, "skipping malformed ANT+ message"),
+        }
+    }
+}
+
+fn send(
+    driver: &mut UsbDriver<GlobalContext>,
+    message: &dyn ant::messages::TransmitableMessage,
+) -> anyhow::Result<()> {
+    driver
+        .send_message(message)
+        .map_err(|e| anyhow::anyhow!("ANT+ USB write failed: {e:?}"))
+}
+
+fn to_device_update(message: &RxMessage, accumulators: &mut Accumulators) -> Option<DeviceUpdate> {
+    let RxMessage::BroadcastData(data) = message else {
+        return None;
+    };
+    // No device id info means it can't be attributed to a device.
+    let channel_id = data.extended_info.and_then(|ext| ext.channel_id_output)?;
+    let device_type_id: u8 = channel_id.device_type.device_type_id.into();
+    if device_type_id != FE_C_DEVICE_TYPE {
+        return None;
+    }
+    // Only the General FE Data page carries distance.
+    let page = parse_page16(&data.payload.data)?;
+    tracing::debug!(
+        device_number = channel_id.device_number,
+        equipment_type_byte = page.equipment_type_byte,
+        distance_raw = ?page.distance_raw,
+        speed_mps = ?page.speed_mps,
+        fe_state = ?page.fe_state,
+        "page16 parsed"
+    );
+    // Devices that don't report distance are of no use here.
+    let distance_raw = page.distance_raw?;
+
+    let device_id = channel_id.device_number;
+    let distance_m = accumulators
+        .entry(device_id)
+        .or_default()
+        .accumulate(distance_raw);
+
+    Some(DeviceUpdate {
+        device_id,
+        device_type: EquipmentType::from_fe_c_byte(page.equipment_type_byte),
+        distance_m,
+        speed_mps: page.speed_mps,
+        heart_rate: page.heart_rate,
+        timestamp: Instant::now(),
+    })
 }
