@@ -38,7 +38,9 @@ per-device breakdown, streamed to a browser in real time.
 ## Prerequisites
 
 - Rust (stable, 2024 edition)
-- Node.js 22.12+ (required by Vitest) + [pnpm](https://pnpm.io/)
+- Node.js 26+ and [pnpm](https://pnpm.io/). Any recent pnpm works: it
+  switches itself to the version pinned in `frontend/package.json`
+  (`packageManager`).
 - `libusb-1.0-0-dev` — needed to build `rusb` (the USB backend), required
   even in `--simulate` mode since it's a compile-time dependency.
 - To use real hardware: an ANT+ USB dongle. On WSL2, attach it from the

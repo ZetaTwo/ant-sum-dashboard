@@ -1,6 +1,5 @@
 use std::time::{Duration, Instant};
 
-use rand::Rng;
 use tokio::sync::mpsc;
 
 use crate::types::{DeviceUpdate, EquipmentType};
@@ -90,7 +89,7 @@ async fn run_device(
         } else {
             REST_TRICKLE
         };
-        let jitter = rand::thread_rng().gen_range(0.7..1.3);
+        let jitter = rand::random_range(0.7..1.3);
         let speed_mps = device.speed_mps as f64 * effort * jitter;
         device.distance_m += speed_mps * device.tick_interval.as_secs_f64();
 

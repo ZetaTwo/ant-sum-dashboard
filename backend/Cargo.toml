@@ -6,14 +6,14 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["ws"] }
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.7", features = ["fs"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
-rand = "0.8"
+rand = "0.10"
 anyhow = "1"
 ant = { git = "https://github.com/cujomalainey/ant-rs", rev = "4426dc64b060ad511931644cb419ebd7cb6b8769" }
 rusb = "0.9"
@@ -22,7 +22,7 @@ axum-embed = "0.1.0"
 
 [target.'cfg(windows)'.dependencies]
 tray-icon = "0.26"
-windows-service = "0.7"
+windows-service = "0.8"
 windows-sys = { version = "0.61", features = [
     "Win32_System_Console",
     "Win32_System_Threading",

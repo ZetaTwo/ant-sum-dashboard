@@ -10,4 +10,4 @@ API.
 - 2026-10-20 — `api/ws.ts` (WebSocket with stall detection and reconnect) instead of the REST `api/client.ts` — the backend pushes state over `/ws`; there is no REST API or session to refresh — Frontend
 - 2026-10-20 — No Playwright browser tests yet — the skill's setup is built around Postgres and auth, neither of which exists here; unit/component tests only for now — Frontend testing
 - 2026-10-20 — Theme `dashboard` is dark only, without a light `prefers-color-scheme` variant — it runs on a dedicated screen in the training room — Frontend (Theming)
-- 2026-10-20 — TypeScript pinned to `~6.0` — pnpm resolved TypeScript 7 (the native compiler) by default; the current `create-vite` vue-ts template pins `~6.0.3` for vue-tsc — Frontend (Stack)
+- 2026-10-20 — TypeScript pinned to `~6.0` — vue-tsc 3.3.13 (latest) fails to start with TypeScript 7: it loads `typescript/lib/tsc`, which TypeScript 7 no longer exports. The `create-vite` vue-ts template pins `~6.0.3` too — Frontend (Stack)
