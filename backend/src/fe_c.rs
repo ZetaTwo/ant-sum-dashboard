@@ -10,6 +10,8 @@
 //! little-endian, 0.001 m/s, 0xFFFF = invalid), heart rate (byte 6, 0xFF =
 //! invalid), and the distance-enabled bit (byte 7, bit 2).
 
+use std::time::Instant;
+
 const PAGE_NUMBER_GENERAL_FE_DATA: u8 = 0x10;
 const DISTANCE_TRAVELED_ENABLED_BIT: u8 = 0x04;
 
@@ -80,12 +82,18 @@ pub fn parse_page16(payload: &[u8; 8]) -> Option<Page16Data> {
     })
 }
 
+/// Faster than any indoor machine will report (90 km/h), used to reject
+/// counter jumps that can't be real movement.
+const MAX_PLAUSIBLE_SPEED_MPS: f64 = 25.0;
+/// Allowance for the counter's 1 m resolution on closely spaced readings.
+const DISTANCE_SLACK_M: f64 = 2.0;
+
 /// Tracks a single device's rolling 1-byte (0-255m) distance counter and
 /// unrolls it into a monotonically increasing total.
 #[derive(Debug, Default)]
 pub struct DistanceAccumulator {
     total_m: f64,
-    last_raw_byte: Option<u8>,
+    last: Option<(u8, Instant)>,
 }
 
 impl DistanceAccumulator {
@@ -93,23 +101,34 @@ impl DistanceAccumulator {
         Self::default()
     }
 
-    /// Feeds one raw distance byte, returning the updated cumulative total.
-    /// The first byte received establishes a baseline and adds nothing.
-    pub fn accumulate(&mut self, raw_byte: u8) -> f64 {
-        if let Some(last) = self.last_raw_byte {
-            let delta = if raw_byte >= last {
-                (raw_byte - last) as f64
+    /// Feeds one raw distance byte received at `at`, returning the updated
+    /// cumulative total. The first byte received establishes a baseline and
+    /// adds nothing.
+    pub fn accumulate(&mut self, raw_byte: u8, at: Instant) -> f64 {
+        if let Some((last, last_at)) = self.last {
+            let max_plausible_m = MAX_PLAUSIBLE_SPEED_MPS
+                * at.saturating_duration_since(last_at).as_secs_f64()
+                + DISTANCE_SLACK_M;
+            // Forward distance modulo 256, which covers rolling past 255.
+            let delta = raw_byte.wrapping_sub(last) as f64;
+            self.total_m += if delta <= max_plausible_m {
+                delta
             } else {
-                // Byte wrapped past 255 back to 0. Any decrease is treated
-                // as a rollover; a device resetting mid-session or a
-                // corrupt/duplicate packet could cause a spurious jump, but
-                // basic single-rollover detection is what the FE-C spec
-                // expects here.
-                (256 - last as u32 + raw_byte as u32) as f64
+                // Too far to have been covered since the last reading: the
+                // equipment reset its own counter, which many machines do
+                // when a workout is ended or restarted on the console.
+                // Counted as a rollover, that would add up to 255 phantom
+                // meters. The counter restarted from 0, so the new reading
+                // is what's been covered since, if that's plausible.
+                let since_reset = raw_byte as f64;
+                if since_reset <= max_plausible_m {
+                    since_reset
+                } else {
+                    0.0
+                }
             };
-            self.total_m += delta;
         }
-        self.last_raw_byte = Some(raw_byte);
+        self.last = Some((raw_byte, at));
         self.total_m
     }
 
@@ -121,6 +140,31 @@ impl DistanceAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    /// Feeds bytes one second apart.
+    struct Feeder {
+        acc: DistanceAccumulator,
+        at: Instant,
+    }
+
+    impl Feeder {
+        fn new() -> Self {
+            Self {
+                acc: DistanceAccumulator::new(),
+                at: Instant::now(),
+            }
+        }
+
+        fn feed(&mut self, raw_byte: u8) -> f64 {
+            self.feed_after(Duration::from_secs(1), raw_byte)
+        }
+
+        fn feed_after(&mut self, gap: Duration, raw_byte: u8) -> f64 {
+            self.at += gap;
+            self.acc.accumulate(raw_byte, self.at)
+        }
+    }
 
     #[test]
     fn parse_page16_rejects_other_pages() {
@@ -176,49 +220,76 @@ mod tests {
 
     #[test]
     fn accumulator_first_byte_adds_nothing() {
-        let mut acc = DistanceAccumulator::new();
-        assert_eq!(acc.accumulate(100), 0.0);
+        let mut acc = Feeder::new();
+        assert_eq!(acc.feed(100), 0.0);
     }
 
     #[test]
     fn accumulator_normal_increment() {
-        let mut acc = DistanceAccumulator::new();
-        acc.accumulate(10);
-        assert_eq!(acc.accumulate(50), 40.0);
+        let mut acc = Feeder::new();
+        acc.feed(10);
+        assert_eq!(acc.feed(30), 20.0);
     }
 
     #[test]
     fn accumulator_repeated_byte_is_a_no_op() {
-        let mut acc = DistanceAccumulator::new();
-        acc.accumulate(255);
-        assert_eq!(acc.accumulate(255), 0.0);
+        let mut acc = Feeder::new();
+        acc.feed(255);
+        assert_eq!(acc.feed(255), 0.0);
     }
 
     #[test]
     fn accumulator_handles_exact_rollover() {
-        let mut acc = DistanceAccumulator::new();
-        acc.accumulate(255);
+        let mut acc = Feeder::new();
+        acc.feed(255);
         // 255 -> 0 is a 1m step (255, then wraps to 0).
-        assert_eq!(acc.accumulate(0), 1.0);
+        assert_eq!(acc.feed(0), 1.0);
     }
 
     #[test]
     fn accumulator_handles_rollover_with_remainder() {
-        let mut acc = DistanceAccumulator::new();
-        acc.accumulate(250);
+        let mut acc = Feeder::new();
+        acc.feed(250);
         // 250 -> 10 after wrapping: (256 - 250) + 10 = 16
-        assert_eq!(acc.accumulate(10), 16.0);
+        assert_eq!(acc.feed(10), 16.0);
     }
 
     #[test]
     fn accumulator_multiple_rollovers_accumulate_correctly() {
-        let mut acc = DistanceAccumulator::new();
+        let mut acc = Feeder::new();
         let sequence = [0u8, 100, 200, 255, 0, 50, 200, 255, 5, 5, 10];
         for b in sequence {
-            acc.accumulate(b);
+            // Far enough apart for every step to be plausible.
+            acc.feed_after(Duration::from_secs(10), b);
         }
         // 0->100 (100) ->200 (100) ->255 (55) ->0 (1) ->50 (50) ->200 (150)
         // ->255 (55) ->5 (6) ->5 (0) ->10 (5) = 522
-        assert_eq!(acc.total_m(), 522.0);
+        assert_eq!(acc.acc.total_m(), 522.0);
+    }
+
+    #[test]
+    fn accumulator_treats_implausible_backwards_jump_as_counter_reset() {
+        let mut acc = Feeder::new();
+        acc.feed(117);
+        acc.feed(137);
+        // Wrapping would read 137 -> 0 as 119 m in one second.
+        assert_eq!(acc.feed(0), 20.0);
+        assert_eq!(acc.feed(4), 24.0);
+    }
+
+    #[test]
+    fn accumulator_counts_distance_since_a_counter_reset() {
+        let mut acc = Feeder::new();
+        acc.feed(137);
+        // Reset to 0 then moved 3 m before this reading arrived.
+        assert_eq!(acc.feed(3), 3.0);
+    }
+
+    #[test]
+    fn accumulator_accepts_large_steps_over_long_gaps() {
+        let mut acc = Feeder::new();
+        acc.feed(200);
+        // E.g. readings missed during a reconnect: 156 m over 30 s is fine.
+        assert_eq!(acc.feed_after(Duration::from_secs(30), 100), 156.0);
     }
 }

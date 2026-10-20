@@ -252,10 +252,11 @@ fn to_device_update(message: &RxMessage, accumulators: &mut Accumulators) -> Opt
     let distance_raw = page.distance_raw?;
 
     let device_id = channel_id.device_number;
+    let timestamp = Instant::now();
     let distance_m = accumulators
         .entry(device_id)
         .or_default()
-        .accumulate(distance_raw);
+        .accumulate(distance_raw, timestamp);
 
     Some(DeviceUpdate {
         device_id,
@@ -263,6 +264,6 @@ fn to_device_update(message: &RxMessage, accumulators: &mut Accumulators) -> Opt
         distance_m,
         speed_mps: page.speed_mps,
         heart_rate: page.heart_rate,
-        timestamp: Instant::now(),
+        timestamp,
     })
 }
