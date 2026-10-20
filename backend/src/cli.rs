@@ -14,12 +14,12 @@ pub struct Cli {
     #[arg(long, env = "SET_END_FRACTION", default_value_t = 0.25)]
     pub set_end_fraction: f64,
 
-    /// A new set starts once activity exceeds this fraction of the previous
-    /// set's average. Keep it above `--set-end-fraction`.
-    #[arg(long, env = "SET_START_FRACTION", default_value_t = 0.4)]
-    pub set_start_fraction: f64,
+    /// A set starts once activity exceeds this multiple of the rest's level.
+    #[arg(long, env = "SET_START_FACTOR", default_value_t = 3.0)]
+    pub set_start_factor: f64,
 
-    /// Minimum mean speed per connected device (m/s) to start a set.
+    /// Minimum mean speed per connected device (m/s) to start a set, and
+    /// to keep a session from timing out.
     #[arg(long, env = "SET_MIN_SPEED_MPS", default_value_t = 0.5)]
     pub set_min_speed_mps: f64,
 

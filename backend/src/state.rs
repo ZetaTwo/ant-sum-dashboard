@@ -46,13 +46,10 @@ pub struct Config {
     /// A set ends once activity drops below this fraction of its reference
     /// level.
     pub set_end_fraction: f64,
-    /// A new set starts once activity exceeds this fraction of the previous
-    /// set's reference level (and `set_min_speed_mps`). Higher than
-    /// `set_end_fraction`, so trickle around the end threshold can't
-    /// immediately restart a set.
-    pub set_start_fraction: f64,
-    /// Absolute floor for starting a set, as mean speed per connected
-    /// device. The only start criterion before the session's first set.
+    /// A set starts once activity exceeds this multiple of the rest's level.
+    pub set_start_factor: f64,
+    /// Mean speed per connected device needed to start a set; activity
+    /// above it also keeps the session from timing out.
     pub set_min_speed_mps: f64,
 }
 
@@ -86,8 +83,6 @@ struct Set {
     started_at: SystemTime,
     /// Samples taken since the set started.
     ticks: usize,
-    /// Updated while the set is running; after it ends, sets the bar for
-    /// starting the next one.
     reference: f64,
     ended: Option<SetEnd>,
 }
@@ -193,12 +188,28 @@ impl AppState {
         mean(self.history.iter().rev().take(FAST_WINDOW).map(|s| s.rate))
     }
 
+    /// Mean activity since the last set ended, before the fast window.
+    fn rest_level(&self) -> f64 {
+        let ended_at = self
+            .set
+            .as_ref()
+            .and_then(|set| set.ended.as_ref())
+            .map(|end| end.at);
+        mean(
+            self.history
+                .iter()
+                .rev()
+                .skip(FAST_WINDOW)
+                .take_while(|s| ended_at.is_none_or(|at| s.at > at))
+                .map(|s| s.rate),
+        )
+    }
+
     fn check_set_start(&mut self) {
-        let previous_reference = self.set.as_ref().map_or(0.0, |set| set.reference);
         let threshold = self
             .config
             .set_min_speed_mps
-            .max(self.config.set_start_fraction * previous_reference);
+            .max(self.config.set_start_factor * self.rest_level());
 
         if self.fast_rate() < threshold {
             self.hold = 0;
@@ -292,6 +303,10 @@ impl AppState {
         else {
             return;
         };
+        // People still moving between sets keep the session going.
+        if self.fast_rate() >= self.config.set_min_speed_mps {
+            return;
+        }
         if now.duration_since(end.at) >= self.config.session_timeout {
             self.session = None;
             self.set = None;
@@ -398,7 +413,7 @@ mod tests {
         Config {
             session_timeout: Duration::from_secs(60),
             set_end_fraction: 0.25,
-            set_start_fraction: 0.4,
+            set_start_factor: 3.0,
             set_min_speed_mps: 0.5,
         }
     }
@@ -620,6 +635,41 @@ mod tests {
         let set = h.view().0.expect("set running");
         assert_eq!(set.ended_at_ms, None);
         assert_eq!(h.elapsed_secs(set.started_at_ms), 27);
+    }
+
+    #[test]
+    fn lighter_set_after_a_hard_one_is_detected() {
+        let mut h = Harness::new();
+        h.run(5, &all(2, 0.0));
+        h.run(30, &all(2, 5.0));
+        h.run(20, &all(2, TRICKLE));
+        h.run(30, &all(2, 1.8));
+        let set = h.view().0.expect("set shown");
+        assert_eq!(set.ended_at_ms, None);
+        assert_eq!(h.elapsed_secs(set.started_at_ms), 30);
+    }
+
+    #[test]
+    fn active_recovery_keeps_the_session_alive() {
+        let mut h = Harness::new();
+        h.run(5, &all(2, 0.0));
+        h.run(30, &all(2, 5.0));
+        // Below the set's end threshold, but people are still moving.
+        h.run(90, &all(2, 1.0));
+        assert!(h.view().1.is_some());
+        h.run(20, &all(2, 5.0));
+        let set = h.view().0.expect("set shown");
+        assert_eq!(set.ended_at_ms, None);
+        assert_eq!(h.elapsed_secs(set.started_at_ms), 20);
+    }
+
+    #[test]
+    fn rest_trickle_does_not_restart_a_set() {
+        let mut h = Harness::new();
+        h.run(5, &all(2, 0.0));
+        h.run(30, &all(2, WORK));
+        h.run(50, &all(2, 0.45));
+        assert!(h.view().0.unwrap().ended_at_ms.is_some());
     }
 
     #[tokio::test]

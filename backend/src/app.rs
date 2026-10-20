@@ -13,12 +13,26 @@ pub async fn run(
     cli: Cli,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        cli.set_end_fraction > 0.0 && cli.set_end_fraction < 1.0,
+        "--set-end-fraction must be between 0 and 1"
+    );
+    // At or below 1, the rest's own activity would start a new set.
+    anyhow::ensure!(
+        cli.set_start_factor > 1.0,
+        "--set-start-factor must be above 1"
+    );
+    anyhow::ensure!(
+        cli.set_min_speed_mps > 0.0,
+        "--set-min-speed-mps must be positive"
+    );
+
     let (update_tx, update_rx) = mpsc::channel(256);
     let session_timeout = Duration::from_secs(cli.session_timeout_secs);
     let state_config = crate::state::Config {
         session_timeout,
         set_end_fraction: cli.set_end_fraction,
-        set_start_fraction: cli.set_start_fraction,
+        set_start_factor: cli.set_start_factor,
         set_min_speed_mps: cli.set_min_speed_mps,
     };
 

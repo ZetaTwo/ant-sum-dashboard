@@ -27,11 +27,13 @@ per-device breakdown, streamed to a browser in real time.
     on complete inactivity: rests can be short, and some machines keep
     reporting a trickle of movement while idle. A finished set stays on
     screen until the next one starts, which needs activity above
-    `--set-start-fraction` of the previous set's average (and at least
-    `--set-min-speed-mps`). Activity is measured as mean speed per connected
-    device, so the thresholds behave the same with 2 machines as with 10.
+    `--set-start-factor` times the rest's own level (and at least
+    `--set-min-speed-mps`), so a lighter set after a hard one still counts.
+    Activity is measured as mean speed per connected device, so the
+    thresholds behave the same with 2 machines as with 10.
   - A **session** spans consecutive sets and resets to zero once
-    `--session-timeout-secs` pass after a set without a new one starting.
+    `--session-timeout-secs` pass after a set with no new set and activity
+    below `--set-min-speed-mps`.
 - `fe_c.rs` parses ANT+ FE-C page 16 ("General FE Data") itself — the `ant`
   crate this project depends on has no built-in FE-C profile support.
 
@@ -93,8 +95,8 @@ CLI flags (all backend, also settable via env var — see `--help`):
 | `--simulate` | `SIMULATE` | off | Use synthetic data instead of real hardware |
 | `--session-timeout-secs` | `SESSION_TIMEOUT_SECS` | `300` | Rest after a set before the session resets |
 | `--set-end-fraction` | `SET_END_FRACTION` | `0.25` | Set ends below this fraction of its recent average |
-| `--set-start-fraction` | `SET_START_FRACTION` | `0.4` | Next set starts above this fraction of the previous set's average |
-| `--set-min-speed-mps` | `SET_MIN_SPEED_MPS` | `0.5` | Minimum mean speed per device to start a set |
+| `--set-start-factor` | `SET_START_FACTOR` | `3.0` | Next set starts above this multiple of the rest's level |
+| `--set-min-speed-mps` | `SET_MIN_SPEED_MPS` | `0.5` | Minimum mean speed per device to start a set or keep a session going |
 
 ### Dev
 
