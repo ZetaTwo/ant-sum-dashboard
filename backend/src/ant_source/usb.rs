@@ -336,14 +336,15 @@ mod tests {
     }
 
     /// Answers the host's reset and probe requests like a real stick, and
-    /// plays `script` once the host has opened scan mode. Each chunk is
-    /// followed by a `WouldBlock`, so the driver sees one chunk per read
-    /// burst, as from a real port.
+    /// plays `script` once the host has opened scan mode. Every frame,
+    /// replies included, is its own read burst: the driver parses one
+    /// message per call, so a second frame in a burst would sit unparsed
+    /// while the script moves on.
     struct FakeStick {
         answers_reset: bool,
         answers_probes: bool,
         script: VecDeque<Chunk>,
-        replies: VecDeque<u8>,
+        replies: VecDeque<Vec<u8>>,
         current: VecDeque<u8>,
         end_of_burst: bool,
         silent_until: Option<Instant>,
@@ -373,33 +374,38 @@ mod tests {
 
     impl Read<u8> for FakeStick {
         fn read(&mut self) -> nb::Result<u8, FakeIoError> {
-            if let Some(byte) = self
-                .replies
-                .pop_front()
-                .or_else(|| self.current.pop_front())
-            {
+            if let Some(byte) = self.current.pop_front() {
                 return Ok(byte);
             }
-            if std::mem::take(&mut self.end_of_burst)
-                || !self.scanning
-                || self
-                    .silent_until
-                    .is_some_and(|until| Instant::now() < until)
-            {
+            if std::mem::take(&mut self.end_of_burst) {
                 return Err(nb::Error::WouldBlock);
             }
-            match self.script.pop_front() {
-                Some(Chunk::Bytes(bytes)) => {
+            // Replies go out even while the script is silent.
+            let next = match self.replies.pop_front() {
+                Some(reply) => Chunk::Bytes(reply),
+                None if !self.scanning
+                    || self
+                        .silent_until
+                        .is_some_and(|until| Instant::now() < until) =>
+                {
+                    return Err(nb::Error::WouldBlock);
+                }
+                None => match self.script.pop_front() {
+                    Some(chunk) => chunk,
+                    None => return Err(nb::Error::WouldBlock),
+                },
+            };
+            match next {
+                Chunk::Bytes(bytes) => {
                     self.current = bytes.into();
                     self.end_of_burst = true;
-                    Ok(self.current.pop_front().expect("chunks are non-empty"))
+                    Ok(self.current.pop_front().expect("frames are non-empty"))
                 }
-                Some(Chunk::Silence(duration)) => {
+                Chunk::Silence(duration) => {
                     self.silent_until = Some(Instant::now() + duration);
                     Err(nb::Error::WouldBlock)
                 }
-                Some(Chunk::Fail) => Err(nb::Error::Other(FakeIoError)),
-                None => Err(nb::Error::WouldBlock),
+                Chunk::Fail => Err(nb::Error::Other(FakeIoError)),
             }
         }
     }
@@ -417,12 +423,12 @@ mod tests {
                 (MSG_REQUEST, Some(&MSG_CAPABILITIES)) if self.answers_reset => {
                     // 8 channels, 3 networks, no option flags.
                     self.replies
-                        .extend(frame_of(MSG_CAPABILITIES, &[8, 3, 0, 0]));
+                        .push_back(frame_of(MSG_CAPABILITIES, &[8, 3, 0, 0]));
                 }
                 (MSG_REQUEST, Some(&MSG_CHANNEL_STATUS)) if self.answers_probes => {
                     // Channel 0, bidirectional slave on network 0, searching.
                     self.replies
-                        .extend(frame_of(MSG_CHANNEL_STATUS, &[CHANNEL, 0x02]));
+                        .push_back(frame_of(MSG_CHANNEL_STATUS, &[CHANNEL, 0x02]));
                 }
                 (MSG_OPEN_RX_SCAN_MODE, _) => self.scanning = true,
                 _ => {}
@@ -545,7 +551,7 @@ mod tests {
             Chunk::Fail,
         ]);
         let (result, distances) = run(stick, &mut Accumulators::new());
-        assert_eq!(distances, [0.0]);
+        assert_eq!(distances, [0.0], "connection ended with {result:?}");
         assert_err_contains(&result, "read failed");
     }
 
