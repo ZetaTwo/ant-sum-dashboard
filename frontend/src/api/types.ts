@@ -1,6 +1,6 @@
-// Hand-mirrored from backend/src/types.rs (WsMessage/DeviceRow). No shared
-// codegen at this scale — keep these in sync manually if the Rust shape
-// changes.
+// Mirrors the Rust types in backend/src/types.rs (WsMessage and friends) by
+// convention — hand-written, not generated; keep these in sync manually if
+// the Rust shape changes. Field names stay snake_case, matching serde.
 
 export interface DeviceRow {
   device_id: number;

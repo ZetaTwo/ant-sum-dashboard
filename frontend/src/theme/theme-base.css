@@ -1,0 +1,11 @@
+/* Custom-property contract only — no values here. Each theme-*.css supplies
+ * the values; components consume var(--...) and never branch on which theme
+ * is active. */
+:root {
+  --color-bg: initial;
+  --color-text: initial;
+  --color-muted: initial;
+  --color-accent: initial;
+  --color-border: initial;
+  --font-ui: initial;
+}

@@ -1,94 +1,24 @@
-:root {
+@import "./theme/theme-base.css";
+@import "./theme/theme-dashboard.css";
+
+html {
   color-scheme: dark;
-  --bg: #0f1115;
-  --fg: #e8eaed;
-  --muted: #8a8f98;
-  --accent: #4fd1c5;
-  --border: #262a33;
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--fg);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-ui);
   display: flex;
   justify-content: center;
 }
 
-main {
+.app-shell {
   width: min(640px, 100%);
   padding: 2rem 1rem;
 }
 
-.status {
-  font-size: 0.85rem;
-  text-align: right;
-  margin-bottom: 1rem;
-}
-
-.status--connected {
-  color: var(--accent);
-}
-
-.status--connecting {
-  color: var(--muted);
-}
-
-.total {
-  font-size: 4rem;
-  font-weight: 700;
-  text-align: center;
-  line-height: 1;
-}
-
-.info {
-  text-align: center;
-  color: var(--muted);
-  margin-top: 0.5rem;
-}
-
-.session {
-  display: flex;
-  justify-content: center;
-  align-items: baseline;
-  gap: 0.75rem;
-  margin: 1.5rem 0 2rem;
-  font-size: 1.25rem;
-}
-
-.session .info {
-  margin: 0;
-  font-size: 1rem;
-}
-
-.session-label {
-  color: var(--muted);
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 0.5rem 0.75rem;
-  border-bottom: 1px solid var(--border);
-}
-
-th {
-  color: var(--muted);
-  font-weight: 500;
-  font-size: 0.85rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-tr.stale {
-  opacity: 0.4;
+.muted {
+  color: var(--color-muted);
 }

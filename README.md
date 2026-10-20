@@ -7,7 +7,7 @@ per-device breakdown, streamed to a browser in real time.
 - **Backend**: Rust. Reads ANT+ FE-C (Fitness Equipment) broadcasts from a
   USB ANT+ dongle, aggregates per-device distance in memory, and streams
   state to connected browsers over a WebSocket.
-- **Frontend**: plain TypeScript, no UI framework, bundled with Vite.
+- **Frontend**: Vue 3 + TypeScript with a Pinia store, bundled with Vite.
 - **Storage**: in-memory only. State does not survive a backend restart.
 
 ## How it works
@@ -38,7 +38,7 @@ per-device breakdown, streamed to a browser in real time.
 ## Prerequisites
 
 - Rust (stable, 2024 edition)
-- Node.js + [pnpm](https://pnpm.io/)
+- Node.js 22.12+ (required by Vitest) + [pnpm](https://pnpm.io/)
 - `libusb-1.0-0-dev` — needed to build `rusb` (the USB backend), required
   even in `--simulate` mode since it's a compile-time dependency.
 - To use real hardware: an ANT+ USB dongle. On WSL2, attach it from the
@@ -125,8 +125,9 @@ or `cargo run -- --port 8080` in `backend/`.
 make test
 ```
 
-Runs the backend's Rust unit tests (`cargo test`) and the frontend
-typecheck (`tsc --noEmit`).
+Runs the backend's Rust unit tests (`cargo test`), the frontend typecheck
+(`vue-tsc -b`) and the frontend's unit/component tests (Vitest, `pnpm test`
+in `frontend/`).
 
 ### Production
 

@@ -2,7 +2,8 @@ import type { StateMessage } from "./types";
 
 // The backend publishes state at least once a second, so silence for this
 // long means the connection is dead even if the socket hasn't noticed.
-const STALL_AFTER_MS = 5000;
+export const STALL_AFTER_MS = 5000;
+export const RECONNECT_DELAY_MS = 1000;
 
 export interface WsCallbacks {
   onMessage: (msg: StateMessage) => void;
@@ -14,21 +15,32 @@ function wsUrl(): string {
   return `${proto}//${location.host}/ws`;
 }
 
-export function connect(callbacks: WsCallbacks): void {
+/**
+ * Keeps a connection to the backend's state stream open, reconnecting after
+ * it drops or stalls. Returns a function that closes it for good.
+ */
+export function connect(callbacks: WsCallbacks): () => void {
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let closeCurrent = () => false;
+
   function open() {
     const ws = new WebSocket(wsUrl());
     let stallTimer: ReturnType<typeof setTimeout> | undefined;
-    let done = false;
+    let closed = false;
 
+    const close = () => {
+      if (closed) return false;
+      closed = true;
+      clearTimeout(stallTimer);
+      ws.close();
+      return true;
+    };
     // Reconnects without waiting for `onclose`: on a half-dead connection
     // the closing handshake can take minutes to time out.
     const reconnect = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(stallTimer);
-      ws.close();
+      if (!close()) return;
       callbacks.onConnectionChange(false);
-      setTimeout(open, 1000);
+      retryTimer = setTimeout(open, RECONNECT_DELAY_MS);
     };
     const armStallTimer = () => {
       clearTimeout(stallTimer);
@@ -45,7 +57,12 @@ export function connect(callbacks: WsCallbacks): void {
     };
     ws.onclose = reconnect;
     ws.onerror = reconnect;
+    closeCurrent = close;
   }
 
   open();
+  return () => {
+    clearTimeout(retryTimer);
+    closeCurrent();
+  };
 }

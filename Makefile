@@ -29,7 +29,7 @@ test-backend:
 	cd backend && cargo test
 
 test-frontend:
-	cd frontend && pnpm exec tsc --noEmit
+	cd frontend && pnpm exec vue-tsc -b && pnpm test
 
 # Run backend (--simulate) and the Vite dev server together; Ctrl-C stops both
 dev:

@@ -1,0 +1,10 @@
+/* The default theme. Dark only: the dashboard runs on a screen in the
+ * training room, not alongside other apps. */
+:root[data-theme="dashboard"] {
+  --color-bg: #0f1115;
+  --color-text: #e8eaed;
+  --color-muted: #8a8f98;
+  --color-accent: #4fd1c5;
+  --color-border: #262a33;
+  --font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
