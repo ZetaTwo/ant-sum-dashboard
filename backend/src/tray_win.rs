@@ -32,6 +32,14 @@ pub fn run(cli: Cli, has_console: bool) -> anyhow::Result<()> {
     let _guard = crate::logging::init_windows(&log_dir, has_console);
     tracing::info!(log_dir = %log_dir.display(), "starting tray application");
 
+    let result = run_tray(cli);
+    if let Err(err) = &result {
+        tracing::error!(?err, "exiting");
+    }
+    result
+}
+
+fn run_tray(cli: Cli) -> anyhow::Result<()> {
     let url = format!("http://127.0.0.1:{}/", cli.port);
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 
@@ -83,10 +91,7 @@ fn serve(
 ) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(crate::app::run(cli, shutdown));
-    // Bounded rather than an implicit `drop(rt)`: the ANT+ USB polling loop
-    // only notices the dropped update channel on its next synchronous poll
-    // iteration, and there's no persisted state to lose by not waiting for
-    // it.
+    // Bounded: the blocking USB thread only notices shutdown on its next poll.
     rt.shutdown_timeout(Duration::from_secs(5));
     result
 }

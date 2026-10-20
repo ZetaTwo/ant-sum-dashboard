@@ -33,7 +33,6 @@ fn main() -> anyhow::Result<()> {
     }
     let result = tray_win::run(cli, has_console);
     if let Err(err) = &result {
-        tracing::error!(?err, "exiting");
         tray_win::show_error(&format!("Stopped with an error:\n\n{err:#}"));
     }
     result
