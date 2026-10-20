@@ -58,6 +58,8 @@ export function connect(callbacks: WsCallbacks): () => void {
     ws.onclose = reconnect;
     ws.onerror = reconnect;
     closeCurrent = close;
+    // Also covers a connection attempt that hangs.
+    armStallTimer();
   }
 
   open();

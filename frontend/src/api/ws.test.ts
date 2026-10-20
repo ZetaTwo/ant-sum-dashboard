@@ -86,6 +86,14 @@ it("replaces a connection that goes silent without closing", () => {
   expect(latest()).not.toBe(first);
 });
 
+it("replaces a connection attempt that never opens", () => {
+  const first = latest();
+  vi.advanceTimersByTime(STALL_AFTER_MS);
+  expect(first.closed).toBe(true);
+  vi.advanceTimersByTime(RECONNECT_DELAY_MS);
+  expect(FakeWebSocket.instances).toHaveLength(2);
+});
+
 it("keeps a connection that keeps receiving messages", () => {
   latest().onopen?.();
   for (let i = 0; i < 10; i++) {
