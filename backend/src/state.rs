@@ -59,6 +59,8 @@ struct DeviceState {
     total_distance_m: f64,
     last_seen: Instant,
     last_seen_wall: SystemTime,
+    /// Reported again after dropping out, so its next gain spans the gap.
+    rejoined: bool,
 }
 
 /// Per-device totals at one tick, plus the activity level since the
@@ -123,7 +125,11 @@ impl AppState {
                 total_distance_m: 0.0,
                 last_seen: update.timestamp,
                 last_seen_wall: SystemTime::now(),
+                rejoined: false,
             });
+        if update.timestamp.duration_since(entry.last_seen) >= CONNECTED_WITHIN {
+            entry.rejoined = true;
+        }
         entry.device_type = update.device_type;
         entry.total_distance_m = update.distance_m;
         entry.last_seen = update.timestamp;
@@ -149,9 +155,6 @@ impl AppState {
 
     fn record_sample(&mut self, now: Instant, wall: SystemTime) {
         let totals = self.totals();
-        // Real ANT+ devices keep broadcasting their frozen distance while
-        // idle, so activity is measured as distance gained, not messages
-        // received.
         let connected = self
             .devices
             .values()
@@ -159,14 +162,24 @@ impl AppState {
             .count();
         let rate = match self.history.back() {
             Some(prev) if connected > 0 => {
-                let gained: f64 = totals
+                // Idle devices keep re-sending their distance, so activity
+                // is distance gained, not messages received.
+                let gained: f64 = self
+                    .devices
                     .iter()
-                    .map(|(id, total)| (total - prev.totals.get(id).unwrap_or(total)).max(0.0))
+                    .filter(|(_, d)| !d.rejoined)
+                    .map(|(id, d)| {
+                        let total = d.total_distance_m;
+                        (total - prev.totals.get(id).unwrap_or(&total)).max(0.0)
+                    })
                     .sum();
                 gained / now.duration_since(prev.at).as_secs_f64() / connected as f64
             }
             _ => 0.0,
         };
+        for device in self.devices.values_mut() {
+            device.rejoined = false;
+        }
 
         self.history.push_back(Sample {
             at: now,
@@ -670,6 +683,17 @@ mod tests {
         h.run(30, &all(2, WORK));
         h.run(50, &all(2, 0.45));
         assert!(h.view().0.unwrap().ended_at_ms.is_some());
+    }
+
+    #[test]
+    fn device_returning_from_out_of_range_does_not_start_a_set() {
+        let mut h = Harness::new();
+        h.run(5, &all(3, 0.0));
+        h.run(30, &all(2, 0.0));
+        // Device 3 covered 150 m while out of range.
+        h.distances.insert(3, 150.0);
+        h.run(10, &all(3, 0.0));
+        assert!(h.view().0.is_none());
     }
 
     #[tokio::test]
