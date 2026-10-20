@@ -10,7 +10,7 @@
 //! little-endian, 0.001 m/s, 0xFFFF = invalid), heart rate (byte 6, 0xFF =
 //! invalid), and the distance-enabled bit (byte 7, bit 2).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const PAGE_NUMBER_GENERAL_FE_DATA: u8 = 0x10;
 const DISTANCE_TRAVELED_ENABLED_BIT: u8 = 0x04;
@@ -87,6 +87,9 @@ pub fn parse_page16(payload: &[u8; 8]) -> Option<Page16Data> {
 const MAX_PLAUSIBLE_SPEED_MPS: f64 = 25.0;
 /// Allowance for the counter's 1 m resolution on closely spaced readings.
 const DISTANCE_SLACK_M: f64 = 2.0;
+/// FE-C broadcasts at 4 Hz, so readings processed in a burst were still
+/// sent at least this far apart.
+const BROADCAST_PERIOD: Duration = Duration::from_millis(250);
 
 /// Tracks a single device's rolling 1-byte (0-255m) distance counter and
 /// unrolls it into a monotonically increasing total.
@@ -106,20 +109,16 @@ impl DistanceAccumulator {
     /// adds nothing.
     pub fn accumulate(&mut self, raw_byte: u8, at: Instant) -> f64 {
         if let Some((last, last_at)) = self.last {
-            let max_plausible_m = MAX_PLAUSIBLE_SPEED_MPS
-                * at.saturating_duration_since(last_at).as_secs_f64()
-                + DISTANCE_SLACK_M;
+            let elapsed = at.saturating_duration_since(last_at).max(BROADCAST_PERIOD);
+            let max_plausible_m =
+                MAX_PLAUSIBLE_SPEED_MPS * elapsed.as_secs_f64() + DISTANCE_SLACK_M;
             // Forward distance modulo 256, which covers rolling past 255.
             let delta = raw_byte.wrapping_sub(last) as f64;
             self.total_m += if delta <= max_plausible_m {
                 delta
             } else {
-                // Too far to have been covered since the last reading: the
-                // equipment reset its own counter, which many machines do
-                // when a workout is ended or restarted on the console.
-                // Counted as a rollover, that would add up to 255 phantom
-                // meters. The counter restarted from 0, so the new reading
-                // is what's been covered since, if that's plausible.
+                // Implausibly far: the machine reset its counter (many do on
+                // a workout restart), so count only what it read since.
                 let since_reset = raw_byte as f64;
                 if since_reset <= max_plausible_m {
                     since_reset
@@ -140,7 +139,6 @@ impl DistanceAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     /// Feeds bytes one second apart.
     struct Feeder {
@@ -283,6 +281,14 @@ mod tests {
         acc.feed(137);
         // Reset to 0 then moved 3 m before this reading arrived.
         assert_eq!(acc.feed(3), 3.0);
+    }
+
+    #[test]
+    fn accumulator_keeps_normal_steps_processed_in_a_burst() {
+        let mut acc = Feeder::new();
+        acc.feed(10);
+        // A backlog drained at once: no time passes between the two.
+        assert_eq!(acc.feed_after(Duration::ZERO, 13), 3.0);
     }
 
     #[test]
