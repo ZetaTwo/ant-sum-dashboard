@@ -148,12 +148,40 @@ build-windows` cross-compiles the same self-contained binary for Windows
 (see Prerequisites). `make run` serves the embedded frontend and `/ws`
 from a single process.
 
-## Windows Service
+## Windows tray application
 
-The same `.exe` produced by `make build-windows` can run either as a normal
-console program or, unattended, as a Windows Service (auto-start on boot,
-no logged-in user or console required). The binary detects which mode it's
-in automatically — nothing to pass at build time.
+On Windows the `.exe` produced by `make build-windows` runs as a tray
+application in the logged-in user's session — no console window, no
+installation or admin rights needed. Double-click it (or start it however
+you like, e.g. a shortcut in `shell:startup` to launch it at login) and a
+tray icon appears with:
+
+- **Open dashboard** — opens `http://127.0.0.1:<port>/` in the default
+  browser.
+- The address the dashboard is served on.
+- **Quit** — stops the server and exits.
+
+Notes:
+
+- The server only listens on `127.0.0.1`, so the dashboard is reachable
+  from this machine only.
+- Logs are written to daily-rolling files under
+  `%LOCALAPPDATA%\ant-sum-dashboard\logs` by default (override with
+  `--log-dir` or `LOG_DIR`). Launched from a terminal, the app also logs
+  there.
+- Flags work the same as on Linux; pass them in the shortcut's target to
+  change e.g. the port.
+- If the server fails to start (most commonly: another instance already has
+  the port), an error dialog says why.
+- The [Windows hardware setup](#windows-hardware-setup) WinUSB driver step
+  above still applies.
+
+### Running as a Windows service instead
+
+The same `.exe` can also run unattended as a Windows Service (auto-start on
+boot, no logged-in user required, no tray icon). The binary detects whether
+the Service Control Manager launched it and otherwise starts as the tray
+application — nothing to pass at build time.
 
 There's no built-in installer; registering the service is a one-time manual
 step, done from an **elevated** (Administrator) Command Prompt or
@@ -190,9 +218,8 @@ Notes:
   default (override with `--log-dir` or the `LOG_DIR` env var set in the
   service's registry `Environment` value). The service account (LocalSystem
   by default) must be able to write there.
-- The [Windows hardware setup](#windows-hardware-setup) WinUSB driver step
-  above still applies the same way regardless of which account runs the
-  service.
+- Don't run the service and the tray application at the same time: the
+  second one can't bind the port.
 - `sc.exe query AntSumDashboard`, or the System log in Event Viewer, show
   whether the SCM itself considers the service started/stopped — app-level
   logs only start once the process gets as far as opening its log file.

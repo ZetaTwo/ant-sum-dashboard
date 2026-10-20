@@ -7,8 +7,8 @@ use crate::types::WsMessage;
 
 /// Spawns the data source and state aggregator, then serves HTTP/WS until
 /// `shutdown` resolves. `shutdown` feeds `axum::serve(...).with_graceful_shutdown(...)`,
-/// so both the interactive Ctrl-C path and the Windows service-stop path
-/// funnel through the same exit mechanism.
+/// so the console Ctrl-C path, the Windows tray's Quit and the Windows
+/// service-stop path all funnel through the same exit mechanism.
 pub async fn run(
     cli: Cli,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -50,7 +50,8 @@ pub async fn run(
     let ctx = crate::ws::AppContext { rx: state_rx };
     let app = crate::ws::router(ctx);
 
-    let addr = format!("0.0.0.0:{}", cli.port);
+    // Only the local browser needs to reach the dashboard.
+    let addr = format!("127.0.0.1:{}", cli.port);
     tracing::info!(%addr, "listening");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     axum::serve(listener, app)

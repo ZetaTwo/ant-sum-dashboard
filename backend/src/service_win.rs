@@ -48,7 +48,7 @@ fn run_service() -> anyhow::Result<()> {
 
     let log_dir = cli.log_dir.clone().unwrap_or_else(default_log_dir);
     std::fs::create_dir_all(&log_dir)?;
-    let _guard = crate::logging::init_service(&log_dir);
+    let _guard = crate::logging::init_windows(&log_dir, false);
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
 

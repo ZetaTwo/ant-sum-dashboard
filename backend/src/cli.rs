@@ -27,8 +27,9 @@ pub struct Cli {
     #[arg(long, env = "SIMULATE")]
     pub simulate: bool,
 
-    /// Directory for rolling log files when running as a Windows service
-    /// (ignored otherwise). Defaults to `%ProgramData%\ant-sum-dashboard\logs`.
+    /// Directory for rolling log files on Windows (ignored elsewhere).
+    /// Defaults to `%LOCALAPPDATA%\ant-sum-dashboard\logs` for the tray
+    /// app and `%ProgramData%\ant-sum-dashboard\logs` as a service.
     #[cfg(windows)]
     #[arg(long, env = "LOG_DIR")]
     pub log_dir: Option<std::path::PathBuf>,
