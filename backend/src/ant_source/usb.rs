@@ -12,13 +12,8 @@
 //! messages (`EnableExtRxMessages`) carrying each payload's originating
 //! device number/type so devices can be told apart without pre-pairing.
 //!
-//! The driver is used directly rather than through `ant::router::Router`:
-//! the router collapses every `DriverError` into a detail-less
-//! `RouterError::DriverError()`, which makes a single corrupt frame
-//! indistinguishable from the dongle disappearing. Talking to the driver
-//! keeps `DriverError::SystemError` (USB I/O failure, reconnect) apart from
-//! frame parse errors (the driver has already skipped past the bad byte,
-//! so just keep reading).
+//! Uses the driver directly: `ant::router::Router` flattens every
+//! `DriverError`, hiding whether a frame was corrupt or the dongle is gone.
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -64,11 +59,9 @@ struct Timing {
     /// How long to wait for the stick to answer the capabilities request
     /// sent right after a reset.
     startup_timeout: Duration,
-    /// The stick only talks when a device is in range, so silence alone
-    /// can't tell "nobody's here" from "the stick has stopped responding"
-    /// (e.g. after the host resumes from sleep). A channel status request
-    /// every `probe_interval` guarantees some traffic; none at all for
-    /// `stall_timeout` means the connection is dead and gets rebuilt.
+    /// The stick is silent with no devices in range; a status request every
+    /// `probe_interval` keeps traffic flowing, none for `stall_timeout`
+    /// means it's dead.
     probe_interval: Duration,
     stall_timeout: Duration,
     /// Pause between polls once the driver has nothing buffered.
@@ -85,10 +78,8 @@ const TIMING: Timing = Timing {
 type Accumulators = HashMap<u16, DistanceAccumulator>;
 
 pub async fn run(tx: mpsc::Sender<DeviceUpdate>) -> anyhow::Result<()> {
-    // Outlives individual connections: a fresh accumulator would restart
-    // that device's total at 0 m after every reconnect. Kept, the first
-    // reading after a reconnect is measured against the last one before
-    // it, so distance covered during the gap still counts.
+    // Kept across reconnects so device totals continue instead of
+    // restarting at 0.
     let mut accumulators = Accumulators::new();
     loop {
         let attempt_tx = tx.clone();
@@ -148,10 +139,8 @@ fn run_blocking(
     run_connection(&mut driver, &tx, accumulators, &TIMING)
 }
 
-/// Configures an opened stick for scanning and forwards FE-C distance
-/// updates until the update receiver is dropped (`Ok`) or the connection
-/// fails (`Err`). Generic over the driver so tests can run it against a
-/// scripted serial port.
+/// Configures the stick and forwards FE-C updates until `tx` closes (`Ok`)
+/// or the connection fails (`Err`).
 fn run_connection<E: Debug, D: Driver<E>>(
     driver: &mut D,
     tx: &mpsc::Sender<DeviceUpdate>,
@@ -232,16 +221,23 @@ fn reset<E: Debug, D: Driver<E>>(driver: &mut D, timing: &Timing) -> anyhow::Res
 /// Returns the next complete message, `None` once the driver's buffer is
 /// drained, or an error if the USB connection itself failed.
 fn next_message<E: Debug, D: Driver<E>>(driver: &mut D) -> anyhow::Result<Option<RxMessage>> {
+    let mut malformed = 0;
     loop {
         match driver.get_message() {
-            Ok(message) => return Ok(message.map(|m| m.message)),
+            Ok(message) => {
+                if malformed > 0 {
+                    tracing::warn!(malformed, "skipped malformed ANT+ data");
+                }
+                return Ok(message.map(|m| m.message));
+            }
             Err(DriverError::SystemError(err)) => {
                 anyhow::bail!("ANT+ USB read failed: {err:?}")
             }
-            // A malformed frame (bad checksum, unknown message id, ...).
-            // The driver has already dropped the offending byte and will
-            // resynchronize on the next sync byte, so keep reading.
-            Err(err) => tracing::warn!(?err, "skipping malformed ANT+ message"),
+            // The driver already dropped the bad byte; keep reading to resync.
+            Err(err) => {
+                tracing::debug!(?err, "malformed ANT+ data");
+                malformed += 1;
+            }
         }
     }
 }
