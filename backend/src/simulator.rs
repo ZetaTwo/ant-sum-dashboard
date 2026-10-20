@@ -52,14 +52,8 @@ pub async fn run(tx: mpsc::Sender<DeviceUpdate>, session_timeout: Duration) -> a
     // A few sets with short trickling rests, then a rest long enough to end
     // the session, so `--simulate` exercises both reset levels.
     let session_cycle = (WORK + SHORT_REST) * SETS_PER_SESSION + session_timeout.mul_f64(1.1);
-    // Shared clock: every device derives "am I working or resting right
-    // now" fresh each tick from the same `start`, rather than each device
-    // accumulating its own independent phase timer, which drifts the
-    // devices out of sync over many cycles. `start` is also used below as
-    // the anchor for every device's tick schedule (via `interval_at`, not
-    // plain `interval`), so all devices tick at the same instants instead
-    // of each starting its cadence whenever its task happened to get
-    // scheduled.
+    // Devices derive their phase from, and tick on, the shared `start` so
+    // they stay in sync.
     let start = tokio::time::Instant::now();
 
     let mut handles = Vec::new();

@@ -18,11 +18,8 @@ use tokio::sync::{mpsc, watch};
 
 use crate::types::{DeviceRow, DeviceUpdate, SessionView, SetView, WsMessage};
 
-/// Set detection windows, in ticks of the state actor's 1s timer.
-///
-/// The current activity level is the mean over the last `FAST_WINDOW`
-/// ticks: distance only moves in 1 m steps and arrives roughly once a
-/// second per device, so single ticks are too noisy to act on.
+/// Detection windows in 1 s ticks; activity is averaged over `FAST_WINDOW`
+/// since distance moves in 1 m steps.
 const FAST_WINDOW: usize = 5;
 /// The set's reference level is the mean over up to `REFERENCE_WINDOW`
 /// ticks before the fast window, so a drop-off doesn't drag down the level
@@ -234,10 +231,8 @@ impl AppState {
         }
         self.hold = 0;
 
-        // Backdate the start to just before the first tick in the
-        // triggering window that cleared the threshold, so the distance
-        // covered while the condition was confirming counts towards the
-        // set.
+        // Backdate to just before the first qualifying tick so the
+        // confirmation ticks' distance counts.
         let len = self.history.len();
         let window = (FAST_WINDOW + START_HOLD).min(len - 1);
         let first_active = (len - window..len)

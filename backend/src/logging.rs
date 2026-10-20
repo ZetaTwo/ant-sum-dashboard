@@ -4,12 +4,8 @@ pub fn init_console() {
     tracing_subscriber::fmt::init();
 }
 
-/// Windows tray/service path: there's usually no console, so logs always go
-/// to a daily-rolling file, and additionally to stdout when the tray app is
-/// attached to the terminal it was launched from. The returned
-/// `WorkerGuard` must be kept alive for the process lifetime — dropping it
-/// early silently stops log writes (the non-blocking writer flushes on
-/// drop).
+/// Daily-rolling file, plus stdout when attached to a terminal. Keep the
+/// guard alive: dropping it stops file writes.
 #[cfg(windows)]
 pub fn init_windows(
     log_dir: &std::path::Path,
