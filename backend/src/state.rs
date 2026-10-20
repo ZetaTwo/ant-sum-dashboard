@@ -457,8 +457,6 @@ mod tests {
                         device_id,
                         device_type: EquipmentType::Rower,
                         distance_m: *distance,
-                        speed_mps: None,
-                        heart_rate: None,
                         timestamp: self.now,
                     });
                 }

@@ -46,8 +46,6 @@ pub struct DeviceUpdate {
     /// Cumulative distance in meters, already rollover-corrected, monotonic
     /// for the lifetime of the process.
     pub distance_m: f64,
-    pub speed_mps: Option<f32>,
-    pub heart_rate: Option<u8>,
     pub timestamp: Instant,
 }
 

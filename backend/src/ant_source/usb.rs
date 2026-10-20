@@ -285,8 +285,6 @@ fn to_device_update(message: &RxMessage, accumulators: &mut Accumulators) -> Opt
         device_id,
         device_type: EquipmentType::from_fe_c_byte(page.equipment_type_byte),
         distance_m,
-        speed_mps: page.speed_mps,
-        heart_rate: page.heart_rate,
         timestamp,
     })
 }

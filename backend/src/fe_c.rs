@@ -100,10 +100,6 @@ pub struct DistanceAccumulator {
 }
 
 impl DistanceAccumulator {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Feeds one raw distance byte received at `at`, returning the updated
     /// cumulative total. The first byte received establishes a baseline and
     /// adds nothing.
@@ -130,10 +126,6 @@ impl DistanceAccumulator {
         self.last = Some((raw_byte, at));
         self.total_m
     }
-
-    pub fn total_m(&self) -> f64 {
-        self.total_m
-    }
 }
 
 #[cfg(test)]
@@ -149,7 +141,7 @@ mod tests {
     impl Feeder {
         fn new() -> Self {
             Self {
-                acc: DistanceAccumulator::new(),
+                acc: DistanceAccumulator::default(),
                 at: Instant::now(),
             }
         }
@@ -256,13 +248,14 @@ mod tests {
     fn accumulator_multiple_rollovers_accumulate_correctly() {
         let mut acc = Feeder::new();
         let sequence = [0u8, 100, 200, 255, 0, 50, 200, 255, 5, 5, 10];
-        for b in sequence {
-            // Far enough apart for every step to be plausible.
-            acc.feed_after(Duration::from_secs(10), b);
-        }
+        // Far enough apart for every step to be plausible.
+        let total = sequence
+            .map(|b| acc.feed_after(Duration::from_secs(10), b))
+            .last()
+            .copied();
         // 0->100 (100) ->200 (100) ->255 (55) ->0 (1) ->50 (50) ->200 (150)
         // ->255 (55) ->5 (6) ->5 (0) ->10 (5) = 522
-        assert_eq!(acc.acc.total_m(), 522.0);
+        assert_eq!(total, Some(522.0));
     }
 
     #[test]

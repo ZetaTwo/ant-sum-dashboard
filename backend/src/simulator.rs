@@ -91,8 +91,6 @@ async fn run_device(
             device_id: device.device_id,
             device_type: device.device_type,
             distance_m: device.distance_m,
-            speed_mps: Some(speed_mps as f32),
-            heart_rate: None,
             timestamp: Instant::now(),
         };
         if tx.send(update).await.is_err() {
