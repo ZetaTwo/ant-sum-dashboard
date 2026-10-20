@@ -112,6 +112,7 @@ dependencies = [
  "axum",
  "axum-embed",
  "clap",
+ "embedded-hal-nb",
  "rand 0.8.8",
  "rusb",
  "rust-embed",

@@ -448,6 +448,14 @@ mod tests {
             (set, session)
         }
 
+        fn row(&self, device_id: u16) -> DeviceRow {
+            let WsMessage::State { devices, .. } = self.state.to_ws_message();
+            devices
+                .into_iter()
+                .find(|d| d.device_id == device_id)
+                .expect("device has a row")
+        }
+
         fn elapsed_secs(&self, epoch_ms: u64) -> u64 {
             to_epoch_ms(self.wall) / 1000 - epoch_ms / 1000
         }
@@ -562,5 +570,68 @@ mod tests {
         let (set, session) = (set.unwrap(), session.unwrap());
         assert!((set.distance_m - 2.0 * 20.0 * WORK).abs() < 1e-9);
         assert_eq!(session.distance_m, set.distance_m);
+    }
+
+    #[test]
+    fn device_joining_mid_set_counts_from_its_first_report() {
+        let mut h = Harness::new();
+        h.run(5, &all(2, 0.0));
+        h.run(20, &all(2, WORK));
+        h.run(10, &all(3, WORK));
+        let joined = h.row(3);
+        assert_eq!(joined.set_distance_m, 10.0 * WORK);
+        assert_eq!(joined.session_distance_m, 10.0 * WORK);
+        assert_eq!(h.row(1).set_distance_m, 30.0 * WORK);
+    }
+
+    #[test]
+    fn device_joining_after_a_set_counts_only_towards_the_session() {
+        let mut h = Harness::new();
+        h.run(5, &all(2, 0.0));
+        h.run(30, &all(2, WORK));
+        h.run(15, &all(2, TRICKLE));
+        assert!(h.view().0.unwrap().ended_at_ms.is_some());
+        h.run(5, &all(3, TRICKLE));
+        let joined = h.row(3);
+        assert_eq!(joined.set_distance_m, 0.0);
+        assert!((joined.session_distance_m - 5.0 * TRICKLE).abs() < 1e-9);
+    }
+
+    #[test]
+    fn disconnected_devices_do_not_dilute_activity() {
+        let mut h = Harness::new();
+        h.run(30, &all(10, WORK));
+        h.run(70, &all(10, TRICKLE));
+        assert!(h.view().1.is_none(), "session should have timed out");
+        // Nine of the ten machines have gone silent. Averaged over all
+        // ten, one person working wouldn't clear the start threshold.
+        h.run(20, &[(1, WORK)]);
+        let (set, _) = h.view();
+        assert_eq!(set.expect("set running").ended_at_ms, None);
+    }
+
+    #[test]
+    fn brief_pause_early_in_a_set_does_not_end_it() {
+        let mut h = Harness::new();
+        h.run(5, &all(2, 0.0));
+        h.run(4, &all(2, WORK));
+        h.run(3, &all(2, TRICKLE));
+        h.run(20, &all(2, WORK));
+        let set = h.view().0.expect("set running");
+        assert_eq!(set.ended_at_ms, None);
+        assert_eq!(h.elapsed_secs(set.started_at_ms), 27);
+    }
+
+    #[tokio::test]
+    async fn publishes_every_tick_without_updates() {
+        let (_update_tx, update_rx) = mpsc::channel(1);
+        let (state_tx, mut state_rx) = watch::channel(AppState::new(config()).to_ws_message());
+        tokio::spawn(run(update_rx, state_tx, config()));
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(3), state_rx.changed())
+                .await
+                .expect("a state publish within a tick")
+                .expect("actor still running");
+        }
     }
 }

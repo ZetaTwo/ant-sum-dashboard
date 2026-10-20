@@ -21,6 +21,7 @@
 //! so just keep reading).
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
 use ant::drivers::{Driver, DriverError, UsbDriver, is_ant_usb_device_from_device};
@@ -29,7 +30,7 @@ use ant::messages::config::{
     AssignChannel, ChannelId, ChannelRfFrequency, ChannelType, EnableExtRxMessages, SetNetworkKey,
 };
 use ant::messages::control::{OpenRxScanMode, RequestMessage, RequestableMessageId, ResetSystem};
-use rusb::{DeviceList, GlobalContext};
+use rusb::DeviceList;
 use tokio::sync::mpsc;
 
 use crate::fe_c::{DistanceAccumulator, parse_page16};
@@ -59,17 +60,27 @@ const ANT_PLUS_NETWORK_KEY: [u8; 8] = [0xB9, 0xA5, 0x21, 0xFB, 0xBD, 0x72, 0xC3,
 /// for the user to reattach the device.
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 
-/// How long to wait for the stick to answer the capabilities request sent
-/// right after a reset.
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(1);
+struct Timing {
+    /// How long to wait for the stick to answer the capabilities request
+    /// sent right after a reset.
+    startup_timeout: Duration,
+    /// The stick only talks when a device is in range, so silence alone
+    /// can't tell "nobody's here" from "the stick has stopped responding"
+    /// (e.g. after the host resumes from sleep). A channel status request
+    /// every `probe_interval` guarantees some traffic; none at all for
+    /// `stall_timeout` means the connection is dead and gets rebuilt.
+    probe_interval: Duration,
+    stall_timeout: Duration,
+    /// Pause between polls once the driver has nothing buffered.
+    poll_interval: Duration,
+}
 
-/// The stick only talks when a device is in range, so silence alone can't
-/// tell "nobody's here" from "the stick has stopped responding" (e.g. after
-/// the host resumes from sleep). A channel status request every
-/// `PROBE_INTERVAL` guarantees some traffic; none at all for
-/// `STALL_TIMEOUT` means the connection is dead and gets rebuilt.
-const PROBE_INTERVAL: Duration = Duration::from_secs(5);
-const STALL_TIMEOUT: Duration = Duration::from_secs(15);
+const TIMING: Timing = Timing {
+    startup_timeout: Duration::from_secs(1),
+    probe_interval: Duration::from_secs(5),
+    stall_timeout: Duration::from_secs(15),
+    poll_interval: Duration::from_millis(10),
+};
 
 type Accumulators = HashMap<u16, DistanceAccumulator>;
 
@@ -134,20 +145,33 @@ fn run_blocking(
     let mut driver = UsbDriver::new(device)
         .map_err(|e| anyhow::anyhow!("failed to open ANT+ USB driver: {e:?}"))?;
 
-    reset(&mut driver)?;
+    run_connection(&mut driver, &tx, accumulators, &TIMING)
+}
 
-    send(&mut driver, &SetNetworkKey::new(0, ANT_PLUS_NETWORK_KEY))?;
+/// Configures an opened stick for scanning and forwards FE-C distance
+/// updates until the update receiver is dropped (`Ok`) or the connection
+/// fails (`Err`). Generic over the driver so tests can run it against a
+/// scripted serial port.
+fn run_connection<E: Debug, D: Driver<E>>(
+    driver: &mut D,
+    tx: &mpsc::Sender<DeviceUpdate>,
+    accumulators: &mut Accumulators,
+    timing: &Timing,
+) -> anyhow::Result<()> {
+    reset(driver, timing)?;
+
+    send(driver, &SetNetworkKey::new(0, ANT_PLUS_NETWORK_KEY))?;
     send(
-        &mut driver,
+        driver,
         &AssignChannel::new(CHANNEL, ChannelType::BidirectionalSlave, 0, None),
     )?;
-    send(&mut driver, &ChannelId::new_wildcard(CHANNEL))?;
+    send(driver, &ChannelId::new_wildcard(CHANNEL))?;
     send(
-        &mut driver,
+        driver,
         &ChannelRfFrequency::new(CHANNEL, ANT_PLUS_RF_FREQUENCY_OFFSET),
     )?;
-    send(&mut driver, &EnableExtRxMessages::new(true))?;
-    send(&mut driver, &OpenRxScanMode::new(None))?;
+    send(driver, &EnableExtRxMessages::new(true))?;
+    send(driver, &OpenRxScanMode::new(None))?;
 
     tracing::info!("ANT+ USB radio initialized, listening in continuous scan mode");
 
@@ -155,7 +179,7 @@ fn run_blocking(
     let mut last_probe = Instant::now();
 
     loop {
-        while let Some(message) = next_message(&mut driver)? {
+        while let Some(message) = next_message(driver)? {
             last_rx = Instant::now();
             let Some(update) = to_device_update(&message, accumulators) else {
                 continue;
@@ -165,25 +189,28 @@ fn run_blocking(
             }
         }
 
-        if last_rx.elapsed() >= STALL_TIMEOUT {
-            anyhow::bail!("no response from ANT+ USB stick for {STALL_TIMEOUT:?}");
+        if last_rx.elapsed() >= timing.stall_timeout {
+            anyhow::bail!(
+                "no response from ANT+ USB stick for {:?}",
+                timing.stall_timeout
+            );
         }
-        if last_probe.elapsed() >= PROBE_INTERVAL {
+        if last_probe.elapsed() >= timing.probe_interval {
             send(
-                &mut driver,
+                driver,
                 &RequestMessage::new(CHANNEL, RequestableMessageId::ChannelStatus, None),
             )?;
             last_probe = Instant::now();
         }
 
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(timing.poll_interval);
     }
 }
 
 /// Resets the radio and waits for it to come back, mirroring the handshake
 /// `ant::router::Router::new` performs: reset, purge whatever was already
 /// queued, then use the capabilities response as the "ready" signal.
-fn reset(driver: &mut UsbDriver<GlobalContext>) -> anyhow::Result<()> {
+fn reset<E: Debug, D: Driver<E>>(driver: &mut D, timing: &Timing) -> anyhow::Result<()> {
     send(driver, &ResetSystem::new())?;
     while driver.get_message().unwrap_or(None).is_some() {}
     send(
@@ -191,7 +218,7 @@ fn reset(driver: &mut UsbDriver<GlobalContext>) -> anyhow::Result<()> {
         &RequestMessage::new(0, RequestableMessageId::Capabilities, None),
     )?;
 
-    let deadline = Instant::now() + STARTUP_TIMEOUT;
+    let deadline = Instant::now() + timing.startup_timeout;
     while Instant::now() < deadline {
         if let Some(message) = next_message(driver)?
             && matches!(message, RxMessage::Capabilities(_))
@@ -204,7 +231,7 @@ fn reset(driver: &mut UsbDriver<GlobalContext>) -> anyhow::Result<()> {
 
 /// Returns the next complete message, `None` once the driver's buffer is
 /// drained, or an error if the USB connection itself failed.
-fn next_message(driver: &mut UsbDriver<GlobalContext>) -> anyhow::Result<Option<RxMessage>> {
+fn next_message<E: Debug, D: Driver<E>>(driver: &mut D) -> anyhow::Result<Option<RxMessage>> {
     loop {
         match driver.get_message() {
             Ok(message) => return Ok(message.map(|m| m.message)),
@@ -219,8 +246,8 @@ fn next_message(driver: &mut UsbDriver<GlobalContext>) -> anyhow::Result<Option<
     }
 }
 
-fn send(
-    driver: &mut UsbDriver<GlobalContext>,
+fn send<E: Debug, D: Driver<E>>(
+    driver: &mut D,
     message: &dyn ant::messages::TransmitableMessage,
 ) -> anyhow::Result<()> {
     driver
@@ -266,4 +293,295 @@ fn to_device_update(message: &RxMessage, accumulators: &mut Accumulators) -> Opt
         heart_rate: page.heart_rate,
         timestamp,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! Runs `run_connection` through ant-rs's real `SerialDriver` (which
+    //! shares its frame parsing with `UsbDriver`) on top of a fake stick
+    //! speaking raw ANT wire bytes.
+
+    use std::collections::VecDeque;
+
+    use ant::drivers::{SerialDriver, StubPin};
+    use embedded_hal_nb::nb;
+    use embedded_hal_nb::serial::{self, ErrorKind, ErrorType, Read, Write};
+
+    use super::*;
+
+    const TEST_TIMING: Timing = Timing {
+        startup_timeout: Duration::from_millis(100),
+        probe_interval: Duration::from_millis(10),
+        stall_timeout: Duration::from_millis(100),
+        poll_interval: Duration::from_millis(1),
+    };
+
+    const SYNC: u8 = 0xA4;
+    const MSG_BROADCAST_DATA: u8 = 0x4E;
+    const MSG_CHANNEL_STATUS: u8 = 0x52;
+    const MSG_CAPABILITIES: u8 = 0x54;
+    const MSG_REQUEST: u8 = 0x4D;
+    const MSG_OPEN_RX_SCAN_MODE: u8 = 0x5B;
+    const EQUIPMENT_ROWER: u8 = 22;
+
+    #[derive(Debug)]
+    struct FakeIoError;
+
+    impl serial::Error for FakeIoError {
+        fn kind(&self) -> ErrorKind {
+            ErrorKind::Other
+        }
+    }
+
+    enum Chunk {
+        Bytes(Vec<u8>),
+        /// Stay silent for this long before the next chunk.
+        Silence(Duration),
+        /// The read fails, like the dongle being unplugged.
+        Fail,
+    }
+
+    /// Answers the host's reset and probe requests like a real stick, and
+    /// plays `script` once the host has opened scan mode. Each chunk is
+    /// followed by a `WouldBlock`, so the driver sees one chunk per read
+    /// burst, as from a real port.
+    struct FakeStick {
+        answers_reset: bool,
+        answers_probes: bool,
+        script: VecDeque<Chunk>,
+        replies: VecDeque<u8>,
+        current: VecDeque<u8>,
+        end_of_burst: bool,
+        silent_until: Option<Instant>,
+        scanning: bool,
+        written: Vec<u8>,
+    }
+
+    impl FakeStick {
+        fn new(script: Vec<Chunk>) -> Self {
+            Self {
+                answers_reset: true,
+                answers_probes: true,
+                script: script.into(),
+                replies: VecDeque::new(),
+                current: VecDeque::new(),
+                end_of_burst: false,
+                silent_until: None,
+                scanning: false,
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl ErrorType for FakeStick {
+        type Error = FakeIoError;
+    }
+
+    impl Read<u8> for FakeStick {
+        fn read(&mut self) -> nb::Result<u8, FakeIoError> {
+            if let Some(byte) = self
+                .replies
+                .pop_front()
+                .or_else(|| self.current.pop_front())
+            {
+                return Ok(byte);
+            }
+            if std::mem::take(&mut self.end_of_burst)
+                || !self.scanning
+                || self
+                    .silent_until
+                    .is_some_and(|until| Instant::now() < until)
+            {
+                return Err(nb::Error::WouldBlock);
+            }
+            match self.script.pop_front() {
+                Some(Chunk::Bytes(bytes)) => {
+                    self.current = bytes.into();
+                    self.end_of_burst = true;
+                    Ok(self.current.pop_front().expect("chunks are non-empty"))
+                }
+                Some(Chunk::Silence(duration)) => {
+                    self.silent_until = Some(Instant::now() + duration);
+                    Err(nb::Error::WouldBlock)
+                }
+                Some(Chunk::Fail) => Err(nb::Error::Other(FakeIoError)),
+                None => Err(nb::Error::WouldBlock),
+            }
+        }
+    }
+
+    impl Write<u8> for FakeStick {
+        fn write(&mut self, byte: u8) -> nb::Result<(), FakeIoError> {
+            self.written.push(byte);
+            Ok(())
+        }
+
+        /// The driver flushes after each complete outgoing frame.
+        fn flush(&mut self) -> nb::Result<(), FakeIoError> {
+            let frame = std::mem::take(&mut self.written);
+            match (frame[2], frame.get(4)) {
+                (MSG_REQUEST, Some(&MSG_CAPABILITIES)) if self.answers_reset => {
+                    // 8 channels, 3 networks, no option flags.
+                    self.replies
+                        .extend(frame_of(MSG_CAPABILITIES, &[8, 3, 0, 0]));
+                }
+                (MSG_REQUEST, Some(&MSG_CHANNEL_STATUS)) if self.answers_probes => {
+                    // Channel 0, bidirectional slave on network 0, searching.
+                    self.replies
+                        .extend(frame_of(MSG_CHANNEL_STATUS, &[CHANNEL, 0x02]));
+                }
+                (MSG_OPEN_RX_SCAN_MODE, _) => self.scanning = true,
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    fn frame_of(id: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![SYNC, payload.len() as u8, id];
+        frame.extend_from_slice(payload);
+        frame.push(frame.iter().fold(0, |acc, b| acc ^ b));
+        frame
+    }
+
+    /// An extended broadcast (payload plus channel id) from `device`.
+    fn broadcast(device: u16, device_type: u8, page: [u8; 8]) -> Vec<u8> {
+        let mut payload = vec![CHANNEL];
+        payload.extend_from_slice(&page);
+        payload.push(0x80); // flag byte: channel id follows
+        payload.extend_from_slice(&device.to_le_bytes());
+        payload.extend_from_slice(&[device_type, 0x05]);
+        frame_of(MSG_BROADCAST_DATA, &payload)
+    }
+
+    /// FE-C General FE Data page from a rower, in use, distance enabled.
+    fn page16(distance: u8) -> [u8; 8] {
+        [0x10, EQUIPMENT_ROWER, 0, distance, 0xE8, 0x03, 0xFF, 0x34]
+    }
+
+    fn fe_c(device: u16, distance: u8) -> Chunk {
+        Chunk::Bytes(broadcast(device, FE_C_DEVICE_TYPE, page16(distance)))
+    }
+
+    fn run(stick: FakeStick, accumulators: &mut Accumulators) -> (anyhow::Result<()>, Vec<f64>) {
+        let mut driver = SerialDriver::<_, StubPin>::new(stick, None);
+        let (tx, mut rx) = mpsc::channel(64);
+        let result = run_connection(&mut driver, &tx, accumulators, &TEST_TIMING);
+        let mut distances = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            assert_eq!(update.device_type, EquipmentType::Rower);
+            distances.push(update.distance_m);
+        }
+        (result, distances)
+    }
+
+    fn assert_err_contains(result: &anyhow::Result<()>, needle: &str) {
+        let err = result.as_ref().expect_err("connection should have failed");
+        assert!(
+            err.to_string().contains(needle),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn forwards_fe_c_distance_updates() {
+        let stick = FakeStick::new(vec![fe_c(7, 10), fe_c(7, 11), Chunk::Fail]);
+        let (result, distances) = run(stick, &mut Accumulators::new());
+        assert_eq!(distances, [0.0, 1.0]);
+        assert_err_contains(&result, "read failed");
+    }
+
+    #[test]
+    fn skips_malformed_frames_without_reconnecting() {
+        let mut bad_checksum = broadcast(7, FE_C_DEVICE_TYPE, page16(11));
+        *bad_checksum.last_mut().unwrap() ^= 0xFF;
+        // Legacy extended broadcast, an id ant-rs doesn't know.
+        let unknown_id = frame_of(0x5D, &[CHANNEL, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let stick = FakeStick::new(vec![
+            fe_c(7, 10),
+            Chunk::Bytes(bad_checksum),
+            Chunk::Bytes(unknown_id),
+            fe_c(7, 11),
+            Chunk::Fail,
+        ]);
+        let (result, distances) = run(stick, &mut Accumulators::new());
+        // Reaching the update after the bad frames, and only then failing
+        // on the injected I/O error, shows they didn't end the connection.
+        assert_eq!(distances, [0.0, 1.0]);
+        assert_err_contains(&result, "read failed");
+    }
+
+    #[test]
+    fn ignores_broadcasts_without_usable_distance() {
+        let mut no_distance = page16(10);
+        no_distance[7] &= !0x04;
+        let mut other_page = page16(10);
+        other_page[0] = 0x19;
+        let mut without_channel_id = vec![CHANNEL];
+        without_channel_id.extend_from_slice(&page16(10));
+        let heart_rate_monitor = 0x78;
+        let stick = FakeStick::new(vec![
+            Chunk::Bytes(broadcast(7, heart_rate_monitor, page16(10))),
+            Chunk::Bytes(broadcast(7, FE_C_DEVICE_TYPE, no_distance)),
+            Chunk::Bytes(broadcast(7, FE_C_DEVICE_TYPE, other_page)),
+            Chunk::Bytes(frame_of(MSG_BROADCAST_DATA, &without_channel_id)),
+            fe_c(8, 10),
+            Chunk::Fail,
+        ]);
+        let (_, distances) = run(stick, &mut Accumulators::new());
+        assert_eq!(distances, [0.0]);
+    }
+
+    #[test]
+    fn distance_carries_over_a_reconnect() {
+        let mut accumulators = Accumulators::new();
+        let first = FakeStick::new(vec![fe_c(7, 10), fe_c(7, 11), Chunk::Fail]);
+        let (_, before) = run(first, &mut accumulators);
+        let second = FakeStick::new(vec![fe_c(7, 12), Chunk::Fail]);
+        let (_, after) = run(second, &mut accumulators);
+        assert_eq!(before, [0.0, 1.0]);
+        assert_eq!(after, [2.0]);
+    }
+
+    #[test]
+    fn answered_probes_keep_a_quiet_connection_alive() {
+        let stick = FakeStick::new(vec![
+            Chunk::Silence(TEST_TIMING.stall_timeout * 3),
+            fe_c(7, 10),
+            Chunk::Fail,
+        ]);
+        let (result, distances) = run(stick, &mut Accumulators::new());
+        assert_eq!(distances, [0.0]);
+        assert_err_contains(&result, "read failed");
+    }
+
+    #[test]
+    fn reconnects_when_the_stick_stops_answering() {
+        let mut stick = FakeStick::new(vec![
+            Chunk::Silence(TEST_TIMING.stall_timeout * 3),
+            fe_c(7, 10),
+        ]);
+        stick.answers_probes = false;
+        let (result, distances) = run(stick, &mut Accumulators::new());
+        assert!(distances.is_empty());
+        assert_err_contains(&result, "no response");
+    }
+
+    #[test]
+    fn fails_when_the_stick_does_not_come_back_after_reset() {
+        let mut stick = FakeStick::new(Vec::new());
+        stick.answers_reset = false;
+        let (result, _) = run(stick, &mut Accumulators::new());
+        assert_err_contains(&result, "did not respond after reset");
+    }
+
+    #[test]
+    fn stops_cleanly_when_the_receiver_is_gone() {
+        let stick = FakeStick::new(vec![fe_c(7, 10)]);
+        let mut driver = SerialDriver::<_, StubPin>::new(stick, None);
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let result = run_connection(&mut driver, &tx, &mut Accumulators::new(), &TEST_TIMING);
+        assert!(result.is_ok());
+    }
 }
